@@ -1,0 +1,12 @@
+dropout: 0.0
+global_dim: 1
+hidden_dim: 32
+input_dim: 33
+learning_rate: 0.0003
+loss: huber
+num_layers: 2
+output_dim: 1
+pooling: mean
+prediction_level: graph
+residual: true
+weight_decay: 0.01
