@@ -180,7 +180,30 @@ python train.py --h5-path data/compiled.h5 --ablate vertical_profile edge_thermo
 | `edge_thermo` | Edge | 8–13 (T/P deltas, grads, mins) |
 | `edge_all` | Edge | 0–13 (all edge features) |
 
----
+### Ablation Study Results
+
+Baseline: all 33 node features + 14 edge features, `dropout=0.0`, `hidden=32`, `layers=2`, target = `graph_energy_total`.
+
+| Removed Features | Best Val Loss | Val MAE (×10¹²) | Δ vs Baseline |
+|---|:---:|:---:|:---:|
+| *(none — baseline)* | 0.1452 | 6.48 | — |
+| base_perm + edge_perm (6 cols) | 0.1276 | 6.20 | 🟢 −12% |
+| edge_perm (3 edge) | 0.1510 | 6.79 | 🟡 +4% |
+| edge_all (14 edge) | 0.1767 | 7.47 | 🔴 +22% |
+| edge_thermo (6 edge) | 0.1814 | 7.68 | 🔴 +25% |
+| vertical_profile (25 node) | 0.2293 | 8.53 | 🔴 +58% |
+
+### Key Findings
+
+1. **`params_scalar` was actively hurting generalization** — removing the 26 scenario parameters (previously tiled identically across all nodes) dropped val loss by 39%. The model memorized these as graph-level fingerprints rather than learning transferable physics. This motivated its permanent removal from the codebase.
+
+2. **`vertical_profile` is the most important feature group** — removing it causes +58% val loss. The vertical property summary statistics capture critical reservoir heterogeneity that single-point bottom-of-well properties miss.
+
+3. **Edge thermodynamics are highly informative** — inter-well T/P deltas and gradients contribute +25% val loss when removed, consistent with Darcy's law (pressure gradients drive flow, thermal gradients drive heat transfer).
+
+4. **Permeability is partially redundant between nodes and edges** — removing `edge_perm` alone barely hurts (+4%), but removing both `base_perm` and `edge_perm` together actually *helps* (−12%), suggesting conflicting permeability signals at different scales add noise.
+
+5. **Pure graph topology has value, but edge physics matter** — removing all edge features (`edge_all`) hurts by +22%, confirming A\* path attributes contribute beyond connectivity structure alone.
 
 ## Environment Setup
 
