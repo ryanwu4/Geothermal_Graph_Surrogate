@@ -1,6 +1,7 @@
 __pycache__
 lightning_logs
-.agents
 .conda
 data_test
 minimal_compiled_tp.h5
+visualization/media
+visualization/logs
