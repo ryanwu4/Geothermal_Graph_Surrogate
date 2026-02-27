@@ -89,7 +89,8 @@ def _make_colorbar(p_lo: float, p_hi: float) -> VGroup:
     bar.set_fill([COLOR_LO, COLOR_MID, COLOR_HI], opacity=1)
     t_min = Text(f"{p_lo:.1f}", font_size=24).next_to(bar, DOWN, buff=0.1)
     t_max = Text(f"{p_hi:.1f}", font_size=24).next_to(bar, UP, buff=0.1)
-    cb = VGroup(bar, t_min, t_max)
+    t_label = Text("log10(k)", font_size=20).next_to(t_max, UP, buff=0.2)
+    cb = VGroup(bar, t_min, t_max, t_label)
     return cb
 
 
@@ -327,21 +328,24 @@ class MasterScene(ThreeDScene):
 
         # 6. TRANSITION TO GNN PIPELINE -------------------------------------
 
-        # Group the current graph
+        # Ensure the older transformed objects are cleanly replaced by the actual VGroup
+        # to prevent background replicas during the pipeline layout
+        self.remove(path_mobs, well_lines, node_labels)
         graph_group = VGroup(straight_edges, node_circles, node_labels)
+        self.add(graph_group)
 
         # Create target copy for graph to be part of the pipeline layout - halved in size
         target_graph_group = graph_group.copy().scale(0.5)
 
         # GNN Block
         gnn_box = Rectangle(
-            width=5.4,
-            height=3.6,
+            width=3.6,
+            height=2.4,
             color=WHITE,
             fill_color=ManimColor("#222222"),
             fill_opacity=1,
         )
-        gnn_text = Text("Heterogeneous\nGNN", font_size=60).move_to(
+        gnn_text = Text("Heterogeneous\nGNN", font_size=30).move_to(
             gnn_box.get_center()
         )
         gnn_group = VGroup(gnn_box, gnn_text)
@@ -366,37 +370,37 @@ class MasterScene(ThreeDScene):
                 )
             )
             circ.set_fill(opacity=1.0)
-        msg_graph_label = Text("Message Passing\nGraph", font_size=24)
+        msg_graph_label = Text("Message Passing\nGraph", font_size=30)
         msg_graph_full = VGroup(msg_graph_group, msg_graph_label).arrange(
-            DOWN, buff=0.2
+            DOWN, buff=0.4
         )
 
         # Aggregation Block
         agg_box = Rectangle(
-            width=1.6,
-            height=1.2,
+            width=3.6,
+            height=2.4,
             color=WHITE,
             fill_color=ManimColor("#222222"),
             fill_opacity=1,
         )
-        agg_text = Text("Global Readout\n(Aggregation)", font_size=24).move_to(
+        agg_text = Text("Global Readout\n(Aggregation)", font_size=30).move_to(
             agg_box.get_center()
         )
         agg_group = VGroup(agg_box, agg_text)
 
         # FNN Block
         fnn_box = Rectangle(
-            width=1.0,
-            height=1.2,
+            width=3.6,
+            height=2.4,
             color=WHITE,
             fill_color=ManimColor("#222222"),
             fill_opacity=1,
         )
-        fnn_text = Text("FNN", font_size=24).move_to(fnn_box.get_center())
+        fnn_text = Text("FNN", font_size=30).move_to(fnn_box.get_center())
         fnn_group = VGroup(fnn_box, fnn_text)
 
         # Prediction Output
-        pred_label = Text("Total Energy\nProduction", font_size=24)
+        pred_label = Text("Total Energy\nProduction", font_size=30)
         ax = Axes(
             x_range=[0, 10, 2],
             y_range=[0, 10, 2],
@@ -433,9 +437,9 @@ class MasterScene(ThreeDScene):
             arr = Arrow(
                 start=start_obj.get_right(),
                 end=end_obj.get_left(),
-                buff=0.1,
-                max_stroke_width_to_length_ratio=0.5,
-                stroke_width=2,
+                buff=0.15,
+                color=WHITE,
+                stroke_width=4,
             )
             arrows.add(arr)
 

@@ -9,7 +9,7 @@
 #   HDF5_FILE  Path to a raw v2.5_*.h5 file.
 #              Default: ../data_test/v2.5_0111.h5
 #   QUALITY    l (480p preview), m (720p), h (1080p production)
-#              Default: m
+#              Default: l
 # ===========================================================================
 set -uo pipefail
 
@@ -19,7 +19,7 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "$LOG_DIR"
 
 H5="${1:-${SCRIPT_DIR}/../data_test/v2.5_0111.h5}"
-Q="${2:-m}"
+Q="${2:-l}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Geothermal Manim Parallel Renderer"
