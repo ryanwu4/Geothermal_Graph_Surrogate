@@ -75,7 +75,7 @@ def _make_filtered_slices(data: ReservoirData) -> VGroup:
     yi = np.linspace(0, ny - 1, SLICE_RESOLUTON).astype(int)
 
     # Seamless tiling with 5% overlap to prevent gaps
-    sq_size = max(nx / SLICE_RESOLUTON, ny / SLICE_RESOLUTON) * data.scale * 1.05
+    sq_size = max(nx / SLICE_RESOLUTON, ny / SLICE_RESOLUTON) * data.scale
 
     depths = np.linspace(0, nz - 1, SLICE_COUNT).astype(int)
 
@@ -94,6 +94,7 @@ def _make_filtered_slices(data: ReservoirData) -> VGroup:
                         stroke_width=0,
                         fill_color=_perm_color(float(t)),
                         fill_opacity=SLICE_OPACITY,
+                        shade_in_3d=True,
                     )
                     sq.move_to(pos)
                     layer_group.add(sq)

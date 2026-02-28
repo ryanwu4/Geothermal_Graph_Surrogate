@@ -119,7 +119,7 @@ class MasterScene(ThreeDScene):
         xi, yi = np.linspace(0, nx - 1, SLICE_RESOLUTON).astype(int), np.linspace(
             0, ny - 1, SLICE_RESOLUTON
         ).astype(int)
-        sq_size = max(nx / SLICE_RESOLUTON, ny / SLICE_RESOLUTON) * data.scale * 1.05
+        sq_size = max(nx / SLICE_RESOLUTON, ny / SLICE_RESOLUTON) * data.scale
 
         fault_slices = VGroup()
         for zl in depths_f:
@@ -133,6 +133,7 @@ class MasterScene(ThreeDScene):
                             stroke_width=0,
                             fill_color=FAULT_COLOR,
                             fill_opacity=0.5,
+                            shade_in_3d=True,
                         )
                         sq.move_to(pos)
                         layer.add(sq)
@@ -180,6 +181,7 @@ class MasterScene(ThreeDScene):
                             stroke_width=0,
                             fill_color=_perm_color(float(t)),
                             fill_opacity=SLICE_OPACITY_PERM,
+                            shade_in_3d=True,
                         )
                         sq.move_to(pos)
                         layer.add(sq)

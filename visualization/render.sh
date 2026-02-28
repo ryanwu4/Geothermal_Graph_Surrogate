@@ -14,12 +14,12 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONDA_PYTHON="${SCRIPT_DIR}/../.conda/geothermal_min/bin/python"
+CONDA_PYTHON="python"
 LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "$LOG_DIR"
 
 H5="${1:-${SCRIPT_DIR}/../data_test/v2.5_0111.h5}"
-Q="${2:-l}"
+Q="${2:-h}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Geothermal Manim Parallel Renderer"
