@@ -1,4 +1,4 @@
-name: geothermal_min
+name: geothermal-pomdp
 channels:
   - defaults
   - pytorch

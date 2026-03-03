@@ -149,6 +149,28 @@ python infer.py \
 
 Output CSV columns: `case_id`, `predicted_total_energy`, `actual_total_energy`
 
+### Step 4: Custom Layout Inference
+
+Run standalone inference on a custom JSON-defined well configuration utilizing background geology from an existing `.h5` file:
+
+```bash
+python run_inference.py --config my_wells.json
+```
+
+A sample `my_wells.json` structure:
+```json
+{
+    "geology_h5_file": "data_test/v2.5_0111.h5",
+    "checkpoint": "lightning_logs/.../checkpoints/best-*.ckpt",
+    "scaler_path": "lightning_logs/.../checkpoints/scaler.pkl",
+    "device": "cpu",
+    "wells": [
+        {"x": 19, "y": 8, "type": "injector"},
+        {"x": 21, "y": 36, "type": "producer"}
+    ]
+}
+```
+
 ---
 
 ## Prediction Targets

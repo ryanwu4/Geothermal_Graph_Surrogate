@@ -13,7 +13,7 @@ from tqdm import tqdm
 from build_geology_graph import generate_geology_edges
 
 
-def _extract_well_data(
+def extract_well_data(
     is_well: np.ndarray,
     inj_rate: np.ndarray,
     src: h5py.File,
@@ -135,7 +135,7 @@ def _extract_well_data(
     )
 
 
-def _build_wells_table(
+def build_wells_table(
     x_idx: np.ndarray,
     y_idx: np.ndarray,
     depth: np.ndarray,
@@ -175,7 +175,7 @@ def _build_wells_table(
     return wells
 
 
-def _extract_vertical_profiles(
+def extract_vertical_profiles(
     is_well: np.ndarray,
     x_idx: np.ndarray,
     y_idx: np.ndarray,
@@ -235,7 +235,7 @@ def _extract_vertical_profiles(
     return profiles
 
 
-def _extract_wept_for_wells(
+def extract_wept_for_wells(
     src: h5py.File,
     x_idx: np.ndarray,
     y_idx: np.ndarray,
@@ -268,7 +268,7 @@ def _extract_wept_for_wells(
     return wept_series
 
 
-def _extract_well_tp_profiles(
+def extract_well_tp_profiles(
     src: h5py.File,
     is_well: np.ndarray,
     x_idx: np.ndarray,
@@ -383,8 +383,8 @@ def _process_single_file(source_path: Path) -> dict | None:
                 temp0,
                 press0,
                 depth_centroid,
-            ) = _extract_well_data(is_well, inj_rate, src)
-            wells = _build_wells_table(
+            ) = extract_well_data(is_well, inj_rate, src)
+            wells = build_wells_table(
                 x_idx,
                 y_idx,
                 depth,
@@ -398,7 +398,7 @@ def _process_single_file(source_path: Path) -> dict | None:
             )
 
             # Extract vertical profile summary statistics
-            vertical_profiles = _extract_vertical_profiles(is_well, x_idx, y_idx, src)
+            vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
 
             # Use perm-weighted centroid as A* start/end points:
             # fluid enters/exits preferentially through the most permeable
@@ -426,8 +426,8 @@ def _process_single_file(source_path: Path) -> dict | None:
             energy_total = src["Output/FieldEnergyProductionTotal"][...].astype(
                 np.float32, copy=False
             )
-            well_wept = _extract_wept_for_wells(src, x_idx, y_idx, depth)
-            well_tp_profiles = _extract_well_tp_profiles(src, is_well, x_idx, y_idx)
+            well_wept = extract_wept_for_wells(src, x_idx, y_idx, depth)
+            well_tp_profiles = extract_well_tp_profiles(src, is_well, x_idx, y_idx)
 
             return {
                 "status": "success",

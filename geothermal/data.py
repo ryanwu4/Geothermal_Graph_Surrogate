@@ -170,6 +170,183 @@ class HeteroGraphScaler:
 # --------------- Graph loading ---------------
 
 
+
+def build_single_hetero_data(
+    wells: np.ndarray,
+    vertical_profile: np.ndarray,
+    geo_idx: np.ndarray,
+    geo_attr: np.ndarray,
+    target: str = "graph_energy_total",
+    target_val: float = 0.0,
+    tp_t1: np.ndarray | None = None,
+    well_wept: np.ndarray | None = None,
+    case_id: str = "infer",
+) -> HeteroData:
+    n_wells = len(wells)
+    
+    if target in ("node_wept", "node_tp_final"):
+        prediction_level = "node"
+    else:
+        prediction_level = "graph"
+
+    output_dim = TP_PROFILE_STATS if target == "node_tp_final" else 1
+
+    x = wells["x"].astype(np.float32)
+    y = wells["y"].astype(np.float32)
+    depth = wells["depth"].astype(np.float32)
+    inj_rate = wells["inj_rate"].astype(np.float32)
+    perm_x = wells["perm_x"].astype(np.float32)
+    perm_y = wells["perm_y"].astype(np.float32)
+    perm_z = wells["perm_z"].astype(np.float32)
+    porosity = wells["porosity"].astype(np.float32)
+    temp0 = wells["temp0"].astype(np.float32)
+    press0 = wells["press0"].astype(np.float32)
+    
+    is_injector = (inj_rate > 0).astype(np.float32)
+    
+    # Node features: [inj_rate, depth, perm_x, perm_y, perm_z,
+    #                  porosity, temp0, press0, vertical_profile(25)]
+    base_features = np.stack(
+        [inj_rate, depth, perm_x, perm_y, perm_z, porosity, temp0, press0],
+        axis=1,
+    )
+    node_features = np.concatenate([base_features, vertical_profile], axis=1)
+    
+    pos_xy = np.stack([x, y], axis=1)
+    
+    data = HeteroData()
+    data["well"].x = torch.tensor(node_features, dtype=torch.float32)
+    data["well"].pos_xy = torch.tensor(pos_xy, dtype=torch.float32)
+    data["well"].is_injector = torch.tensor(is_injector, dtype=torch.float32)
+    
+    # Ensure every node has at least 2 incoming edges from injectors and 2 from extractors
+    diff = pos_xy[:, np.newaxis, :] - pos_xy[np.newaxis, :, :]
+    dist = np.sqrt(np.sum(diff**2, axis=-1))
+    np.fill_diagonal(dist, np.inf)
+    
+    inj_nodes = np.where(is_injector > 0.5)[0]
+    ext_nodes = np.where(is_injector < 0.5)[0]
+    
+    new_idx_src = []
+    new_idx_dst = []
+    new_attr = []
+    
+    for dst in range(n_wells):
+        if geo_idx.shape[1] > 0:
+            incoming_mask = geo_idx[1, :] == dst
+            existing_srcs = geo_idx[0, incoming_mask]
+        else:
+            existing_srcs = np.array([], dtype=np.int64)
+    
+        existing_inj_srcs = np.intersect1d(existing_srcs, inj_nodes)
+        missing_inj = 2 - len(existing_inj_srcs)
+        if missing_inj > 0:
+            candidate_inj = np.setdiff1d(inj_nodes, existing_inj_srcs)
+            candidate_inj = candidate_inj[candidate_inj != dst]
+            if len(candidate_inj) > 0:
+                cand_dist = dist[candidate_inj, dst]
+                closest_inj = candidate_inj[np.argsort(cand_dist)[:missing_inj]]
+                for src in closest_inj:
+                    new_idx_src.append(src)
+                    new_idx_dst.append(dst)
+                    null_attr = np.zeros(14, dtype=np.float32)
+                    null_attr[0] = dist[src, dst]
+                    new_attr.append(null_attr)
+    
+        existing_ext_srcs = np.intersect1d(existing_srcs, ext_nodes)
+        missing_ext = 2 - len(existing_ext_srcs)
+        if missing_ext > 0:
+            candidate_ext = np.setdiff1d(ext_nodes, existing_ext_srcs)
+            candidate_ext = candidate_ext[candidate_ext != dst]
+            if len(candidate_ext) > 0:
+                cand_dist = dist[candidate_ext, dst]
+                closest_ext = candidate_ext[np.argsort(cand_dist)[:missing_ext]]
+                for src in closest_ext:
+                    new_idx_src.append(src)
+                    new_idx_dst.append(dst)
+                    null_attr = np.zeros(14, dtype=np.float32)
+                    null_attr[0] = dist[src, dst]
+                    new_attr.append(null_attr)
+    
+    if len(new_idx_src) > 0:
+        knn_idx = np.array([new_idx_src, new_idx_dst], dtype=np.int64)
+        knn_attr = np.array(new_attr, dtype=np.float32)
+        if geo_idx.shape[1] > 0:
+            geo_idx = np.concatenate([geo_idx, knn_idx], axis=1)
+            geo_attr = np.concatenate([geo_attr, knn_attr], axis=0)
+        else:
+            geo_idx = knn_idx
+            geo_attr = knn_attr
+    
+    if geo_idx.shape[1] > 0:
+        idx_src = geo_idx[0, :]
+        idx_dst = geo_idx[1, :]
+    
+        src_is_inj = is_injector[idx_src] > 0.5
+        dst_is_inj = is_injector[idx_dst] > 0.5
+    
+        mask_inj_inj = src_is_inj & dst_is_inj
+        mask_ext_ext = (~src_is_inj) & (~dst_is_inj)
+        mask_inj_ext = src_is_inj & (~dst_is_inj)
+        mask_ext_inj = (~src_is_inj) & dst_is_inj
+    
+        edge_dict = {
+            ("well", "inj_to_inj", "well"): mask_inj_inj,
+            ("well", "ext_to_ext", "well"): mask_ext_ext,
+            ("well", "inj_to_ext", "well"): mask_inj_ext,
+            ("well", "ext_to_inj", "well"): mask_ext_inj,
+        }
+    
+        for etype, mask in edge_dict.items():
+            if np.any(mask):
+                e_idx = geo_idx[:, mask]
+                e_attr = geo_attr[mask, :]
+    
+                keep_mask = np.zeros(e_idx.shape[1], dtype=bool)
+                dst_nodes = e_idx[1, :]
+                for d in np.unique(dst_nodes):
+                    d_mask = dst_nodes == d
+                    d_lengths = e_attr[d_mask, 0]
+                    d_indices = np.where(d_mask)[0]
+                    sort_idx = np.argsort(d_lengths)
+                    keep_indices = d_indices[sort_idx[:2]]
+                    keep_mask[keep_indices] = True
+    
+                data[etype].edge_index = torch.tensor(
+                    e_idx[:, keep_mask], dtype=torch.long
+                )
+                data[etype].edge_attr = torch.tensor(
+                    e_attr[keep_mask, :], dtype=torch.float32
+                )
+            else:
+                data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
+                data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
+    
+    else:
+        for etype in EDGE_TYPES:
+            data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
+            data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
+    
+    # Global features: just the well count
+    global_features = np.array([n_wells], dtype=np.float32)
+    data.global_attr = torch.tensor(
+        global_features, dtype=torch.float32
+    ).unsqueeze(0)
+    
+    # Set target on data object
+    if target == "node_tp_final":
+        data.y = torch.tensor(tp_t1.astype(np.float32), dtype=torch.float32)
+    elif target == "node_wept":
+        data.y = torch.tensor(well_wept, dtype=torch.float32)
+    else:
+        data.y = torch.tensor([[target_val]], dtype=torch.float32)
+    data.prediction_level = prediction_level
+    data.filter_extractors = target == "node_wept"
+    data.output_dim = output_dim
+    data.case_id = case_id
+
+    return data
+
 def load_hetero_graphs(
     h5_path: Path, target: str = "graph_energy_total"
 ) -> tuple[list[HeteroData], np.ndarray]:
@@ -235,34 +412,6 @@ def load_hetero_graphs(
                 skipped_empty += 1
                 continue
 
-            x = wells["x"].astype(np.float32)
-            y = wells["y"].astype(np.float32)
-            depth = wells["depth"].astype(np.float32)
-            inj_rate = wells["inj_rate"].astype(np.float32)
-            perm_x = wells["perm_x"].astype(np.float32)
-            perm_y = wells["perm_y"].astype(np.float32)
-            perm_z = wells["perm_z"].astype(np.float32)
-            porosity = wells["porosity"].astype(np.float32)
-            temp0 = wells["temp0"].astype(np.float32)
-            press0 = wells["press0"].astype(np.float32)
-
-            is_injector = (inj_rate > 0).astype(np.float32)
-
-            # Node features: [inj_rate, depth, perm_x, perm_y, perm_z,
-            #                  porosity, temp0, press0, vertical_profile(25)]
-            base_features = np.stack(
-                [inj_rate, depth, perm_x, perm_y, perm_z, porosity, temp0, press0],
-                axis=1,
-            )
-            node_features = np.concatenate([base_features, vertical_profile], axis=1)
-
-            pos_xy = np.stack([x, y], axis=1)
-
-            data = HeteroData()
-            data["well"].x = torch.tensor(node_features, dtype=torch.float32)
-            data["well"].pos_xy = torch.tensor(pos_xy, dtype=torch.float32)
-            data["well"].is_injector = torch.tensor(is_injector, dtype=torch.float32)
-
             if "inputs" in group and "geology_edge_index" in group["inputs"]:
                 geo_idx = group["inputs"]["geology_edge_index"][:]
                 geo_attr = group["inputs"]["geology_edge_attr"][:]
@@ -270,131 +419,17 @@ def load_hetero_graphs(
                 geo_idx = np.empty((2, 0), dtype=np.int64)
                 geo_attr = np.empty((0, 14), dtype=np.float32)
 
-            # Ensure every node has at least 2 incoming edges from injectors and 2 from extractors
-            diff = pos_xy[:, np.newaxis, :] - pos_xy[np.newaxis, :, :]
-            dist = np.sqrt(np.sum(diff**2, axis=-1))
-            np.fill_diagonal(dist, np.inf)
-
-            inj_nodes = np.where(is_injector > 0.5)[0]
-            ext_nodes = np.where(is_injector < 0.5)[0]
-
-            new_idx_src = []
-            new_idx_dst = []
-            new_attr = []
-
-            for dst in range(n_wells):
-                if geo_idx.shape[1] > 0:
-                    incoming_mask = geo_idx[1, :] == dst
-                    existing_srcs = geo_idx[0, incoming_mask]
-                else:
-                    existing_srcs = np.array([], dtype=np.int64)
-
-                existing_inj_srcs = np.intersect1d(existing_srcs, inj_nodes)
-                missing_inj = 2 - len(existing_inj_srcs)
-                if missing_inj > 0:
-                    candidate_inj = np.setdiff1d(inj_nodes, existing_inj_srcs)
-                    candidate_inj = candidate_inj[candidate_inj != dst]
-                    if len(candidate_inj) > 0:
-                        cand_dist = dist[candidate_inj, dst]
-                        closest_inj = candidate_inj[np.argsort(cand_dist)[:missing_inj]]
-                        for src in closest_inj:
-                            new_idx_src.append(src)
-                            new_idx_dst.append(dst)
-                            null_attr = np.zeros(14, dtype=np.float32)
-                            null_attr[0] = dist[src, dst]
-                            new_attr.append(null_attr)
-
-                existing_ext_srcs = np.intersect1d(existing_srcs, ext_nodes)
-                missing_ext = 2 - len(existing_ext_srcs)
-                if missing_ext > 0:
-                    candidate_ext = np.setdiff1d(ext_nodes, existing_ext_srcs)
-                    candidate_ext = candidate_ext[candidate_ext != dst]
-                    if len(candidate_ext) > 0:
-                        cand_dist = dist[candidate_ext, dst]
-                        closest_ext = candidate_ext[np.argsort(cand_dist)[:missing_ext]]
-                        for src in closest_ext:
-                            new_idx_src.append(src)
-                            new_idx_dst.append(dst)
-                            null_attr = np.zeros(14, dtype=np.float32)
-                            null_attr[0] = dist[src, dst]
-                            new_attr.append(null_attr)
-
-            if len(new_idx_src) > 0:
-                knn_idx = np.array([new_idx_src, new_idx_dst], dtype=np.int64)
-                knn_attr = np.array(new_attr, dtype=np.float32)
-                if geo_idx.shape[1] > 0:
-                    geo_idx = np.concatenate([geo_idx, knn_idx], axis=1)
-                    geo_attr = np.concatenate([geo_attr, knn_attr], axis=0)
-                else:
-                    geo_idx = knn_idx
-                    geo_attr = knn_attr
-
-            if geo_idx.shape[1] > 0:
-                idx_src = geo_idx[0, :]
-                idx_dst = geo_idx[1, :]
-
-                src_is_inj = is_injector[idx_src] > 0.5
-                dst_is_inj = is_injector[idx_dst] > 0.5
-
-                mask_inj_inj = src_is_inj & dst_is_inj
-                mask_ext_ext = (~src_is_inj) & (~dst_is_inj)
-                mask_inj_ext = src_is_inj & (~dst_is_inj)
-                mask_ext_inj = (~src_is_inj) & dst_is_inj
-
-                edge_dict = {
-                    ("well", "inj_to_inj", "well"): mask_inj_inj,
-                    ("well", "ext_to_ext", "well"): mask_ext_ext,
-                    ("well", "inj_to_ext", "well"): mask_inj_ext,
-                    ("well", "ext_to_inj", "well"): mask_ext_inj,
-                }
-
-                for etype, mask in edge_dict.items():
-                    if np.any(mask):
-                        e_idx = geo_idx[:, mask]
-                        e_attr = geo_attr[mask, :]
-
-                        keep_mask = np.zeros(e_idx.shape[1], dtype=bool)
-                        dst_nodes = e_idx[1, :]
-                        for d in np.unique(dst_nodes):
-                            d_mask = dst_nodes == d
-                            d_lengths = e_attr[d_mask, 0]
-                            d_indices = np.where(d_mask)[0]
-                            sort_idx = np.argsort(d_lengths)
-                            keep_indices = d_indices[sort_idx[:2]]
-                            keep_mask[keep_indices] = True
-
-                        data[etype].edge_index = torch.tensor(
-                            e_idx[:, keep_mask], dtype=torch.long
-                        )
-                        data[etype].edge_attr = torch.tensor(
-                            e_attr[keep_mask, :], dtype=torch.float32
-                        )
-                    else:
-                        data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
-                        data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
-
-            else:
-                for etype in EDGE_TYPES:
-                    data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
-                    data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
-
-            # Global features: just the well count
-            global_features = np.array([n_wells], dtype=np.float32)
-            data.global_attr = torch.tensor(
-                global_features, dtype=torch.float32
-            ).unsqueeze(0)
-
-            # Set target on data object
-            if target == "node_tp_final":
-                data.y = torch.tensor(tp_t1.astype(np.float32), dtype=torch.float32)
-            elif target == "node_wept":
-                data.y = torch.tensor(well_wept, dtype=torch.float32)
-            else:
-                data.y = torch.tensor([[target_val]], dtype=torch.float32)
-            data.prediction_level = prediction_level
-            data.filter_extractors = target == "node_wept"
-            data.output_dim = output_dim
-            data.case_id = case_id
+            data = build_single_hetero_data(
+                wells=wells,
+                vertical_profile=vertical_profile,
+                geo_idx=geo_idx,
+                geo_attr=geo_attr,
+                target=target,
+                target_val=target_val,
+                tp_t1=tp_t1 if target == "node_tp_final" else None,
+                well_wept=well_wept if target == "node_wept" else None,
+                case_id=case_id,
+            )
 
             graphs.append(data)
 
