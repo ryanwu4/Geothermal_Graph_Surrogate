@@ -24,7 +24,9 @@ from geothermal.model import EDGE_TYPES, TP_PROFILE_STATS
 # Edge features layout: [plen(0), t_cost(1), m_perm(2), mx_perm(3), hm_perm(4),
 #                         m_poro(5), mx_poro(6), hm_poro(7),
 #                         delta_t(8), delta_p(9), grad_t(10), grad_p(11),
-#                         m_t(12), m_p(13)]
+#                         m_t(12), m_p(13), hm_visc(14), hm_aniso_perm(15), 
+#                         min_tof(16), max_tof(17)]
+
 ABLATION_GROUPS = {
     # Node feature groups
     "vertical_profile": {"type": "node", "cols": list(range(8, 33))},
@@ -37,7 +39,7 @@ ABLATION_GROUPS = {
         "type": "edge",
         "cols": [8, 9, 10, 11, 12, 13],
     },  # T/P deltas, grads, mins
-    "edge_all": {"type": "edge", "cols": list(range(14))},  # all edge features
+    "edge_all": {"type": "edge", "cols": list(range(18))},  # all edge features
 }
 
 
@@ -268,7 +270,7 @@ def load_hetero_graphs(
                 geo_attr = group["inputs"]["geology_edge_attr"][:]
             else:
                 geo_idx = np.empty((2, 0), dtype=np.int64)
-                geo_attr = np.empty((0, 14), dtype=np.float32)
+                geo_attr = np.empty((0, 18), dtype=np.float32)
 
             # Ensure every node has at least 2 incoming edges from injectors and 2 from extractors
             diff = pos_xy[:, np.newaxis, :] - pos_xy[np.newaxis, :, :]
@@ -300,7 +302,7 @@ def load_hetero_graphs(
                         for src in closest_inj:
                             new_idx_src.append(src)
                             new_idx_dst.append(dst)
-                            null_attr = np.zeros(14, dtype=np.float32)
+                            null_attr = np.zeros(18, dtype=np.float32)
                             null_attr[0] = dist[src, dst]
                             new_attr.append(null_attr)
 
@@ -315,7 +317,7 @@ def load_hetero_graphs(
                         for src in closest_ext:
                             new_idx_src.append(src)
                             new_idx_dst.append(dst)
-                            null_attr = np.zeros(14, dtype=np.float32)
+                            null_attr = np.zeros(18, dtype=np.float32)
                             null_attr[0] = dist[src, dst]
                             new_attr.append(null_attr)
 

@@ -17,6 +17,7 @@ def _extract_well_data(
     is_well: np.ndarray,
     inj_rate: np.ndarray,
     src: h5py.File,
+    num_paths: int = 1,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -33,9 +34,8 @@ def _extract_well_data(
     """Extract per-well data at the deepest perforated layer.
 
     Returns:
-        x_idx, y_idx, depth (deepest Z), inj_rate,
         perm_x, perm_y, perm_z, porosity, temp0, press0,
-        depth_centroid (perm-weighted centroid Z index)
+        depth_points (Z indices array [N_wells, num_paths])
     """
     if is_well.shape != inj_rate.shape:
         raise ValueError(
@@ -100,25 +100,28 @@ def _extract_well_data(
         temp0[mask] = t0_slice[x_z, y_z]
         press0[mask] = p0_slice[x_z, y_z]
 
-    # Compute permeability-weighted centroid depth for each well.
-    # This is the depth at which flow effectively concentrates across the
-    # perforated interval, and serves as a more physical A* start point
-    # than the absolute bottom of the well.
+    # Compute permutation points for each well to extract multiple paths.
     perm_avg_grid = (
         src["Input/PermX"][:] + src["Input/PermY"][:] + src["Input/PermZ"][:]
     ) / 3.0
-    depth_centroid = np.zeros(x_idx.size, dtype=np.int32)
+    depth_points = np.zeros((x_idx.size, num_paths), dtype=np.int32)
     for i in range(x_idx.size):
         xi, yi = x_idx[i], y_idx[i]
         z_perf = np.where(well_mask[:, xi, yi])[0]
-        if len(z_perf) <= 1:
-            depth_centroid[i] = depth[i]
+        if len(z_perf) == 0:
+            depth_points[i, :] = depth[i]
+        elif len(z_perf) == 1:
+            depth_points[i, :] = z_perf[0]
         else:
-            perms = perm_avg_grid[z_perf, xi, yi].astype(np.float64)
-            perms = np.maximum(perms, 1e-30)  # avoid zero weights
-            centroid_z = np.average(z_perf.astype(np.float64), weights=perms)
-            # Snap to nearest valid perforated layer
-            depth_centroid[i] = z_perf[np.argmin(np.abs(z_perf - centroid_z))]
+            if num_paths == 1:
+                perms = perm_avg_grid[z_perf, xi, yi].astype(np.float64)
+                perms = np.maximum(perms, 1e-30)  # avoid zero weights
+                centroid_z = np.average(z_perf.astype(np.float64), weights=perms)
+                # Snap to nearest valid perforated layer
+                depth_points[i, 0] = z_perf[np.argmin(np.abs(z_perf - centroid_z))]
+            else:
+                indices = np.linspace(0, len(z_perf) - 1, num_paths).astype(int)
+                depth_points[i, :] = z_perf[indices]
 
     return (
         x_idx.astype(np.int32),
@@ -131,7 +134,7 @@ def _extract_well_data(
         porosity,
         temp0,
         press0,
-        depth_centroid,
+        depth_points,
     )
 
 
@@ -330,7 +333,7 @@ def _extract_well_tp_profiles(
     return profiles
 
 
-def _process_single_file(source_path: Path) -> dict | None:
+def _process_single_file(source_path: Path, num_paths: int = 1) -> dict | None:
     """Process a single HDF5 file and return the extracted data as a dictionary."""
     try:
         with h5py.File(source_path, "r") as src:
@@ -382,8 +385,8 @@ def _process_single_file(source_path: Path) -> dict | None:
                 porosity,
                 temp0,
                 press0,
-                depth_centroid,
-            ) = _extract_well_data(is_well, inj_rate, src)
+                depth_points,
+            ) = _extract_well_data(is_well, inj_rate, src, num_paths=num_paths)
             wells = _build_wells_table(
                 x_idx,
                 y_idx,
@@ -400,15 +403,16 @@ def _process_single_file(source_path: Path) -> dict | None:
             # Extract vertical profile summary statistics
             vertical_profiles = _extract_vertical_profiles(is_well, x_idx, y_idx, src)
 
-            # Use perm-weighted centroid as A* start/end points:
-            # fluid enters/exits preferentially through the most permeable
-            # layers, so the centroid is a better representative depth than
-            # the absolute bottom of the well.
-            well_coords = np.stack(
-                [x_idx, y_idx, depth_centroid], axis=1
-            )  # [X, Y, Z] used by generate_geology_edges
+            # Create well_coords shape [N_wells, num_paths, 3] points for A* start/end
+            well_coords = np.zeros((x_idx.size, num_paths, 3), dtype=np.int32)
+            well_coords[:, :, 0] = x_idx[:, None]
+            well_coords[:, :, 1] = y_idx[:, None]
+            well_coords[:, :, 2] = depth_points
+
             edge_index, edge_attr = generate_geology_edges(
-                perm_avg_full,
+                perm_x_full,
+                perm_y_full,
+                perm_z_full,
                 porosity_full,
                 temp0_full,
                 press0_full,
@@ -450,7 +454,7 @@ def _process_single_file(source_path: Path) -> dict | None:
 
 
 def compile_dataset(
-    input_dir: Path, output_file: Path, num_workers: int = None
+    input_dir: Path, output_file: Path, num_workers: int = None, num_paths: int = 5
 ) -> None:
     h5_files = sorted(input_dir.glob("*.h5"))
     if not h5_files:
@@ -473,9 +477,10 @@ def compile_dataset(
 
     # Process files in parallel
     results = []
+    worker_fn = partial(_process_single_file, num_paths=num_paths)
     with mp.Pool(processes=num_workers) as pool:
         for result in tqdm(
-            pool.imap_unordered(_process_single_file, source_files),
+            pool.imap_unordered(worker_fn, source_files),
             total=len(source_files),
             desc="Extracting Data",
         ):
@@ -584,12 +589,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of parallel workers for extraction (default: CPU count - 1)",
     )
+    parser.add_argument(
+        "--num-paths",
+        type=int,
+        default=3,
+        help="Number of paths to find per well pair (default: 3)",
+    )
     return parser.parse_args()
-
 
 def main() -> None:
     args = parse_args()
-    compile_dataset(args.input_dir, args.output_file, args.num_workers)
+    compile_dataset(args.input_dir, args.output_file, args.num_workers, args.num_paths)
 
 
 if __name__ == "__main__":

@@ -172,7 +172,9 @@ def load(
 
     # --- A* paths -----------------------------------------------------------
     edge_index, edge_attr, path_coords_list = generate_geology_edges(
-        perm_avg,
+        perm_x,
+        perm_y,
+        perm_z,
         porosity,
         temp0,
         press0,
