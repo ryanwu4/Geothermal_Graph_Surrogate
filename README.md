@@ -157,7 +157,7 @@ Run standalone inference on a custom JSON-defined well configuration utilizing b
 python run_inference.py --config my_wells.json
 ```
 
-A sample `my_wells.json` structure:
+A sample `my_wells.json` structure (note that six injectors and six producers are necessary):
 ```json
 {
     "geology_h5_file": "data_test/v2.5_0111.h5",
@@ -165,8 +165,8 @@ A sample `my_wells.json` structure:
     "scaler_path": "lightning_logs/.../checkpoints/scaler.pkl",
     "device": "cpu",
     "wells": [
-        {"x": 19, "y": 8, "type": "injector"},
-        {"x": 21, "y": 36, "type": "producer"}
+        {"x": 19, "y": 8, "type": "injector (one of SIX)"},
+        {"x": 21, "y": 36, "type": "producer (one of SIX)"}
     ]
 }
 ```
