@@ -31,6 +31,22 @@ EDGE_TYPES = [
 # Number of T/P profile statistics: mean, min, max for T and P
 TP_PROFILE_STATS = 6
 
+NODE_BASE_FEATURES = [
+    "inj_rate", "depth", "perm_x", "perm_y", "perm_z", "porosity", "temp0", "press0"
+]
+NODE_PROFILE_FEATURE_DIM = 25
+NODE_FEATURE_DIM = len(NODE_BASE_FEATURES) + NODE_PROFILE_FEATURE_DIM
+
+EDGE_FEATURES = [
+    "plen", "t_cost", "m_perm", "mx_perm", "hm_perm", 
+    "m_poro", "mx_poro", "hm_poro",
+    "delta_t", "delta_p", "grad_t", "grad_p", 
+    "m_t", "m_p", "hm_visc", "hm_aniso_perm", 
+    "min_tof", "max_tof"
+]
+EDGE_FEATURE_DIM = len(EDGE_FEATURES)
+OLD_EDGE_FEATURE_DIM = 14
+
 
 # --------------- seeding ---------------
 
@@ -61,6 +77,7 @@ class HeteroGNNRegressor(L.LightningModule):
         loss: str,
         prediction_level: str = "graph",  # "graph" or "node"
         output_dim: int = 1,
+        edge_dim: int = EDGE_FEATURE_DIM,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -79,7 +96,7 @@ class HeteroGNNRegressor(L.LightningModule):
         for _ in range(num_layers):
             conv_dict = {}
             for edge_type in EDGE_TYPES:
-                e_dim = 14
+                e_dim = edge_dim
                 nn_edge = nn.Sequential(
                     nn.Linear(e_dim, 32),
                     nn.GELU(),

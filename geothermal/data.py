@@ -14,32 +14,38 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import HeteroData
 
-from geothermal.model import EDGE_TYPES, TP_PROFILE_STATS
+from geothermal.model import (
+    EDGE_TYPES, 
+    TP_PROFILE_STATS,
+    NODE_BASE_FEATURES,
+    NODE_FEATURE_DIM,
+    NODE_PROFILE_FEATURE_DIM,
+    EDGE_FEATURES,
+    EDGE_FEATURE_DIM,
+    OLD_EDGE_FEATURE_DIM,
+)
 
 # --------------- Feature ablation ---------------
 
-# Node features layout (after params_scalar removal):
-# [inj_rate(0), depth(1), perm_x(2), perm_y(3), perm_z(4),
-#  porosity(5), temp0(6), press0(7), vertical_profile(8:33)]
-# Edge features layout: [plen(0), t_cost(1), m_perm(2), mx_perm(3), hm_perm(4),
-#                         m_poro(5), mx_poro(6), hm_poro(7),
-#                         delta_t(8), delta_p(9), grad_t(10), grad_p(11),
-#                         m_t(12), m_p(13), hm_visc(14), hm_aniso_perm(15), 
-#                         min_tof(16), max_tof(17)]
+# Feature layouts are defined in geothermal/model.py: 
+# see NODE_BASE_FEATURES and EDGE_FEATURES.
 
 ABLATION_GROUPS = {
     # Node feature groups
-    "vertical_profile": {"type": "node", "cols": list(range(8, 33))},
-    "base_perm": {"type": "node", "cols": [2, 3, 4]},  # perm_x/y/z
-    "base_thermo": {"type": "node", "cols": [6, 7]},  # temp0, press0
+    "vertical_profile": {
+        "type": "node", 
+        "cols": list(range(len(NODE_BASE_FEATURES), NODE_FEATURE_DIM))
+    },
+    "base_perm": {"type": "node", "cols": [NODE_BASE_FEATURES.index("perm_x"), NODE_BASE_FEATURES.index("perm_y"), NODE_BASE_FEATURES.index("perm_z")]},
+    "base_thermo": {"type": "node", "cols": [NODE_BASE_FEATURES.index("temp0"), NODE_BASE_FEATURES.index("press0")]},
     # Edge feature groups
-    "edge_perm": {"type": "edge", "cols": [2, 3, 4]},  # min/max/hm perm
-    "edge_poro": {"type": "edge", "cols": [5, 6, 7]},  # min/max/hm poro
+    "edge_perm": {"type": "edge", "cols": [EDGE_FEATURES.index("m_perm"), EDGE_FEATURES.index("mx_perm"), EDGE_FEATURES.index("hm_perm")]},
+    "edge_poro": {"type": "edge", "cols": [EDGE_FEATURES.index("m_poro"), EDGE_FEATURES.index("mx_poro"), EDGE_FEATURES.index("hm_poro")]},
     "edge_thermo": {
         "type": "edge",
-        "cols": [8, 9, 10, 11, 12, 13],
-    },  # T/P deltas, grads, mins
-    "edge_all": {"type": "edge", "cols": list(range(18))},  # all edge features
+        "cols": [EDGE_FEATURES.index(f) for f in ["delta_t", "delta_p", "grad_t", "grad_p", "m_t", "m_p"] if f in EDGE_FEATURES],
+    },
+    "edge_all": {"type": "edge", "cols": list(range(EDGE_FEATURE_DIM))},
 }
 
 
@@ -230,7 +236,7 @@ def load_hetero_graphs(
             if "well_vertical_profile" in group:
                 vertical_profile = group["well_vertical_profile"][:].astype(np.float32)
             else:
-                vertical_profile = np.zeros((len(wells), 25), dtype=np.float32)
+                vertical_profile = np.zeros((len(wells), NODE_PROFILE_FEATURE_DIM), dtype=np.float32)
 
             n_wells = len(wells)
             if n_wells == 0:
@@ -268,9 +274,13 @@ def load_hetero_graphs(
             if "inputs" in group and "geology_edge_index" in group["inputs"]:
                 geo_idx = group["inputs"]["geology_edge_index"][:]
                 geo_attr = group["inputs"]["geology_edge_attr"][:]
+                if geo_attr.shape[1] == OLD_EDGE_FEATURE_DIM:
+                    padded = np.zeros((geo_attr.shape[0], EDGE_FEATURE_DIM), dtype=np.float32)
+                    padded[:, :OLD_EDGE_FEATURE_DIM] = geo_attr
+                    geo_attr = padded
             else:
                 geo_idx = np.empty((2, 0), dtype=np.int64)
-                geo_attr = np.empty((0, 18), dtype=np.float32)
+                geo_attr = np.empty((0, EDGE_FEATURE_DIM), dtype=np.float32)
 
             # Ensure every node has at least 2 incoming edges from injectors and 2 from extractors
             diff = pos_xy[:, np.newaxis, :] - pos_xy[np.newaxis, :, :]
@@ -302,7 +312,7 @@ def load_hetero_graphs(
                         for src in closest_inj:
                             new_idx_src.append(src)
                             new_idx_dst.append(dst)
-                            null_attr = np.zeros(18, dtype=np.float32)
+                            null_attr = np.zeros(EDGE_FEATURE_DIM, dtype=np.float32)
                             null_attr[0] = dist[src, dst]
                             new_attr.append(null_attr)
 
@@ -317,7 +327,7 @@ def load_hetero_graphs(
                         for src in closest_ext:
                             new_idx_src.append(src)
                             new_idx_dst.append(dst)
-                            null_attr = np.zeros(18, dtype=np.float32)
+                            null_attr = np.zeros(EDGE_FEATURE_DIM, dtype=np.float32)
                             null_attr[0] = dist[src, dst]
                             new_attr.append(null_attr)
 
@@ -373,12 +383,12 @@ def load_hetero_graphs(
                         )
                     else:
                         data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
-                        data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
+                        data[etype].edge_attr = torch.empty((0, EDGE_FEATURE_DIM), dtype=torch.float32)
 
             else:
                 for etype in EDGE_TYPES:
                     data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
-                    data[etype].edge_attr = torch.empty((0, 8), dtype=torch.float32)
+                    data[etype].edge_attr = torch.empty((0, EDGE_FEATURE_DIM), dtype=torch.float32)
 
             # Global features: just the well count
             global_features = np.array([n_wells], dtype=np.float32)

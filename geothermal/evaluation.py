@@ -17,6 +17,18 @@ from torch_geometric.loader import DataLoader
 from geothermal.model import EDGE_TYPES, HeteroGNNRegressor, TP_PROFILE_STATS
 from geothermal.data import HeteroGraphScaler
 
+plt.style.use("dark_background")
+plt.rcParams.update({
+    "font.size": 18,
+    "axes.labelsize": 18,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 16,
+    "figure.titlesize": 24,
+    "figure.facecolor": "black",
+    "axes.facecolor": "black",
+    "savefig.facecolor": "black",
+})
 
 # --------------- batch inference ---------------
 
@@ -117,10 +129,10 @@ def save_error_scatter_plots(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
 
-    colors = {"train": "tab:blue", "val": "tab:orange", "test": "tab:green"}
-    alphas = {"train": 0.1, "val": 0.3, "test": 0.5}
+    colors = {"train": "#9CDCEB", "val": "#FF862F", "test": "#83C167"}
+    alphas = {"train": 0.2, "val": 0.4, "test": 0.4}
 
     for split_name, (y_true, y_pred) in split_data.items():
         yt_flat = y_true.flatten()
@@ -154,25 +166,41 @@ def save_error_scatter_plots(
         )
         axes[2].fill_between(eval_points, 0, kde(eval_points), color=c, alpha=0.1)
 
+        # Plot KDE for Absolute Percentage Error
+        abs_pct_err = np.abs(pct_err_clamped)
+        # Avoid issues with all-zero identical errors
+        if np.std(abs_pct_err) > 1e-6:
+            kde_pct = stats.gaussian_kde(abs_pct_err)
+            pct_eval_points = np.linspace(
+                max(0, np.median(abs_pct_err) - 3 * np.std(abs_pct_err)),
+                np.median(abs_pct_err) + 3 * np.std(abs_pct_err),
+                100,
+            )
+            axes[3].plot(
+                pct_eval_points, kde_pct(pct_eval_points), color=c, label=split_name, linewidth=2
+            )
+            axes[3].fill_between(pct_eval_points, 0, kde_pct(pct_eval_points), color=c, alpha=0.1)
+
     axes[0].plot([c_min, c_max], [c_min, c_max], linestyle="--", color="red")
     axes[0].set_xlim(c_min, c_max)
     axes[0].set_ylim(c_min, c_max)
-    axes[0].set_xlabel("Actual Energy Prod. Rate (Core 96%)")
+    axes[0].set_xlabel("Actual Energy Prod. Rate")
     axes[0].set_ylabel("Predicted Energy Prod. Rate")
-    axes[0].set_title("Predicted vs Actual")
     axes[0].legend()
 
     axes[1].axhline(0.0, linestyle="--", color="red")
     axes[1].set_xlabel("Actual Energy Prod. Rate")
-    axes[1].set_ylabel("Percentage Error % (Clamped)")
-    axes[1].set_title("Relative Error vs Actual")
+    axes[1].set_ylabel("Percentage Error %")
     axes[1].legend()
 
     axes[2].axvline(0.0, linestyle="--", color="red")
     axes[2].set_xlabel("Absolute Error (Pred - Actual)")
     axes[2].set_ylabel("Probability Density")
-    axes[2].set_title("KDE Error Distribution")
     axes[2].legend()
+
+    axes[3].set_xlabel("Absolute Percentage Error %")
+    axes[3].set_ylabel("Probability Density")
+    axes[3].legend()
 
     fig.tight_layout()
     out_path = output_dir / "combined_prediction_error_dists.png"
@@ -243,7 +271,6 @@ def save_loss_curve_plot(metrics_csv_path: Path, output_path: Path) -> None:
                 ax.plot(np.array(eps)[v_mask], v_plot, label=f"Val {metric}")
 
         ax.set_xlabel("Epoch")
-        ax.set_title(f"Curve: {metric.upper()}")
         ax.legend()
 
     fig.tight_layout()
@@ -286,7 +313,6 @@ def save_extreme_error_plots(
         ax.set_yticklabels(seen_labels)
         ax.invert_yaxis()
         ax.set_xlabel("Absolute error")
-        ax.set_title(f"{split_name}: {title_suffix}")
         fig.tight_layout()
         out_path = output_dir / filename
         fig.savefig(out_path, dpi=160)
@@ -415,10 +441,9 @@ def save_extreme_error_graph_plots(
         ]
 
         node_handles, node_labels = ax.get_legend_handles_labels()
-        ax.legend(handles=node_handles + rel_handles, loc="best", fontsize=8)
+        ax.legend(handles=node_handles + rel_handles, loc="best", fontsize=14)
 
         case_id = case_ids[idx]
-        ax.set_title(f"{split_name} {label} error graph\n" f"case={case_id}")
         ax.set_xlabel("well x")
         ax.set_ylabel("well y")
         ax.set_aspect("equal", adjustable="box")

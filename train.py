@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--test-fraction", type=float, default=0.15)
+    parser.add_argument("--gpu", type=int, default=0, help="GPU index to use for training")
 
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-epochs", type=int, default=180)
@@ -237,10 +238,12 @@ def main() -> None:
         min_delta=1e-5,
     )
 
+    devices = [args.gpu] if torch.cuda.is_available() else "auto"
+
     trainer = L.Trainer(
         max_epochs=args.max_epochs,
         accelerator="auto",
-        devices=1,
+        devices=devices,
         deterministic=True,
         callbacks=[checkpoint_cb, early_stop_cb],
         logger=logger,
@@ -262,7 +265,7 @@ def main() -> None:
     print(f"Saved scaler: {scaler_path}")
 
     best_model = HeteroGNNRegressor.load_from_checkpoint(best_path)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     if torch.backends.mps.is_available() and not torch.cuda.is_available():
         device = torch.device("mps")
     best_model = best_model.to(device)
