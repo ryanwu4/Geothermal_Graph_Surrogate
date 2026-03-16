@@ -2,7 +2,6 @@ __pycache__
 lightning_logs
 .conda
 data_test
-minimal_compiled_tp.h5
 visualization/media
 visualization/logs
-data_compiled_multitof.h5
+/*.h5
