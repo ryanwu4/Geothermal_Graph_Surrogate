@@ -13,6 +13,7 @@ Usage examples:
 """
 from __future__ import annotations
 
+import os
 import argparse
 import os
 import pickle
@@ -105,10 +106,7 @@ def main() -> None:
             "graph_energy_rate",
         ],
         default="graph_energy_total",
-        help=(
-            "Prediction target: node-level WEPT, node-level next-timestep T/P, "
-            "or graph-level energy."
-        ),
+        help="Prediction target: node-level WEPT, node-level next-timestep T/P, or graph-level energy.",
     )
     parser.add_argument(
         "--withhold-top-pct",
@@ -120,15 +118,28 @@ def main() -> None:
             "Default: 0 (disabled)."
         ),
     )
+    parser.add_argument(
+        "--cache-to-gpu",
+        action="store_true",
+        help="If set, pushes the full dataset array into VRAM at startup. (Overrides num-workers to 0).",
+    )
+    parser.add_argument(
+        "--gpu",
+        type=str,
+        default="auto",
+        help="GPU indices to use (e.g., '0' or '0,1'). 'auto' means all available GPUs. Default: auto.",
+    )
     args = parser.parse_args()
 
-    prediction_level = (
-        "node" if args.target in ("node_wept", "node_tp_final") else "graph"
-    )
+    prediction_level = "node" if args.target in ("node_wept", "node_tp_final") else "graph"
     output_dim = TP_PROFILE_STATS if args.target == "node_tp_final" else 1
 
     L.seed_everything(args.seed, workers=True)
     seed_all(args.seed)
+    # CRITICAL: MaxPool3d backward pass has NO deterministic CUDA implementation in PyTorch.
+    # Lightning's seed_everything(workers=True) strictly forces determinism causing a crash.
+    torch.use_deterministic_algorithms(False, warn_only=True)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
     graphs_raw, targets = load_hetero_graphs(args.h5_path, target=args.target)
 
@@ -158,13 +169,21 @@ def main() -> None:
             seed=args.seed,
         )
     else:
-        all_idx = np.arange(len(graphs_raw))
         train_val_idx, test_idx = train_test_split(
-            all_idx, test_size=args.test_fraction, random_state=args.seed, shuffle=True
+            range(len(graphs_raw)),
+            test_size=args.test_fraction,
+            random_state=args.seed,
+            shuffle=True, # Keep shuffle=True for non-stratified
         )
-        val_rel = args.val_fraction / (1.0 - args.test_fraction)
+
+        val_size_relative = args.val_fraction / (1.0 - args.test_fraction)
+
+        # No stratification for train_val_strata in this 'else' block
         train_idx, val_idx = train_test_split(
-            train_val_idx, test_size=val_rel, random_state=args.seed, shuffle=True
+            train_val_idx,
+            test_size=val_size_relative,
+            random_state=args.seed,
+            shuffle=True, # Keep shuffle=True for non-stratified
         )
 
     train_graphs_raw = [graphs_raw[i] for i in train_idx]
@@ -194,12 +213,26 @@ def main() -> None:
         f"Split sizes: train={len(train_graphs)}, val={len(val_graphs)}, test={len(test_graphs)}"
     )
 
+    if args.cache_to_gpu and torch.cuda.is_available():
+        print(f"Caching entire dataset directly to GPU (cuda:{args.gpu}) VRAM...")
+        device = torch.device(f"cuda:{args.gpu}")
+        for split_subset in [train_graphs, val_graphs, test_graphs]:
+            for g in split_subset:
+                g.to(device) # Moves standard PyG nodes/edges
+                # Manually traverse our custom python wrapper protecting the 3D grid volumes
+                for k, v in g.physics_context.d.items():
+                    g.physics_context.d[k] = v.to(device, non_blocking=True)
+        # Multiprocessing serialization crashes attempting to fork CUDA tensors via IPC
+        args.num_workers = 0 
+        print("Set num_workers=0 to support native CUDA dataset persistence.")
+
     train_loader = DataLoader(
         train_graphs,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         persistent_workers=args.num_workers > 0,
+        pin_memory=not args.cache_to_gpu,
     )
     val_loader = DataLoader(
         val_graphs,
@@ -207,6 +240,7 @@ def main() -> None:
         shuffle=False,
         num_workers=args.num_workers,
         persistent_workers=args.num_workers > 0,
+        pin_memory=not args.cache_to_gpu,
     )
 
     model = HeteroGNNRegressor(
@@ -222,6 +256,8 @@ def main() -> None:
         loss=args.loss,
         prediction_level=prediction_level,
         output_dim=output_dim,
+        active_channels=["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0", "valid_mask"],
+        latent_edge_dim=32,
     )
 
     checkpoint_cb = ModelCheckpoint(
@@ -237,15 +273,20 @@ def main() -> None:
         min_delta=1e-5,
     )
 
+    if args.gpu.lower() == "auto":
+        devices = "auto"
+    else:
+        devices = [int(x.strip()) for x in args.gpu.split(",")]
+
     trainer = L.Trainer(
         max_epochs=args.max_epochs,
-        accelerator="auto",
-        devices=1,
-        deterministic=True,
+        accelerator="gpu" if devices != "auto" else "auto",
+        devices=devices,
         callbacks=[checkpoint_cb, early_stop_cb],
         logger=logger,
         log_every_n_steps=1,
         gradient_clip_val=args.grad_clip_val,
+        deterministic=False,
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)

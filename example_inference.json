@@ -1,11 +1,13 @@
 {
     "geology_h5_file": "data_test/v2.5_0111.h5",
-    "checkpoint": "trained/withheld_0p_totalenergy/checkpoints/best-epoch=026-val_loss=0.0675.ckpt",
+    "checkpoint": "trained/withheld_0p_totalenergy/checkpoints/best-epoch=064-val_loss=0.0587.ckpt",
     "scaler_path": "trained/withheld_0p_totalenergy/checkpoints/scaler.pkl",
+    "norm_config": "trained/norm_config.json",
     "wells": [
         {
             "x": 15,
             "y": 10,
+            "depth": 50,
             "type": "injector"
         },
         {

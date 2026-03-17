@@ -143,16 +143,17 @@ def save_error_scatter_plots(
             yt_flat, pct_err_clamped, s=2, alpha=a, color=c, label=split_name
         )
 
-        kde = stats.gaussian_kde(residual)
-        eval_points = np.linspace(
-            np.median(residual) - 3 * np.std(residual),
-            np.median(residual) + 3 * np.std(residual),
-            100,
-        )
-        axes[2].plot(
-            eval_points, kde(eval_points), color=c, label=split_name, linewidth=2
-        )
-        axes[2].fill_between(eval_points, 0, kde(eval_points), color=c, alpha=0.1)
+        if len(residual) > 1 and np.std(residual) > 1e-8:
+            kde = stats.gaussian_kde(residual)
+            eval_points = np.linspace(
+                np.median(residual) - 3 * np.std(residual),
+                np.median(residual) + 3 * np.std(residual),
+                100,
+            )
+            axes[2].plot(
+                eval_points, kde(eval_points), color=c, label=split_name, linewidth=2
+            )
+            axes[2].fill_between(eval_points, 0, kde(eval_points), color=c, alpha=0.1)
 
     axes[0].plot([c_min, c_max], [c_min, c_max], linestyle="--", color="red")
     axes[0].set_xlim(c_min, c_max)

@@ -9,6 +9,7 @@ import torch
 import lightning as L
 from torch import nn
 from torch_geometric.data import HeteroData
+from geothermal.physics_slab import PhysicsSlabExtractor, PhysicsSlabCNN
 from torch_geometric.nn import (
     BatchNorm,
     NNConv,
@@ -61,6 +62,8 @@ class HeteroGNNRegressor(L.LightningModule):
         loss: str,
         prediction_level: str = "graph",  # "graph" or "node"
         output_dim: int = 1,
+        active_channels: list[str] = ["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0", "valid_mask"],
+        latent_edge_dim: int = 32,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -70,6 +73,10 @@ class HeteroGNNRegressor(L.LightningModule):
         self.weight_decay = weight_decay
         self.output_dim = output_dim
         self.prediction_level = prediction_level
+        self.latent_edge_dim = latent_edge_dim
+
+        self.slab_extractor = PhysicsSlabExtractor(active_channels=active_channels)
+        self.edge_cnn = PhysicsSlabCNN(in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim)
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -79,7 +86,7 @@ class HeteroGNNRegressor(L.LightningModule):
         for _ in range(num_layers):
             conv_dict = {}
             for edge_type in EDGE_TYPES:
-                e_dim = 14
+                e_dim = self.latent_edge_dim
                 nn_edge = nn.Sequential(
                     nn.Linear(e_dim, 32),
                     nn.GELU(),
@@ -147,12 +154,60 @@ class HeteroGNNRegressor(L.LightningModule):
             raise ValueError(f"Unsupported loss: {loss}")
 
     def forward(self, batch: HeteroData) -> torch.Tensor:
+        # Dynamically calculate CNN edge attributes for all edge types
+        edge_attr_dict = {}
+        for edge_type in EDGE_TYPES:
+            edge_index = batch[edge_type].edge_index
+            E = edge_index.shape[1]
+            if E == 0:
+                edge_attr_dict[edge_type] = torch.empty((0, self.latent_edge_dim), device=self.device)
+                continue
+                
+            src_nodes = edge_index[0]
+            dst_nodes = edge_index[1]
+            
+            coords_a = batch["well"].pos_xyz[src_nodes]
+            coords_b = batch["well"].pos_xyz[dst_nodes]
+            batch_idx = batch["well"].batch[src_nodes]
+            
+            edge_attrs = []
+            
+            # Process edges grouped by graph to handle variable-sized physics tensors
+            for i in range(batch.num_graphs):
+                mask = (batch_idx == i)
+                num_edges_i = mask.sum().item()
+                if num_edges_i == 0:
+                    continue
+                    
+                ca_i = coords_a[mask]
+                cb_i = coords_b[mask]
+                
+                # Fetch physics context for this graph
+                phys_ctx = batch.physics_context[i]
+                phys_dict = phys_ctx.d
+                full_shape = phys_ctx.full_shape
+                
+                # Expand physics dict to batch size `num_edges_i`
+                phys_expanded = {}
+                for k, v in phys_dict.items():
+                    # v is (Z, X, Y), expand to (num_edges_i, Z, X, Y)
+                    phys_expanded[k] = v.unsqueeze(0).expand(num_edges_i, -1, -1, -1)
+                
+                # Run Extractor + CNN
+                slabs = self.slab_extractor(phys_expanded, ca_i, cb_i, full_shape)
+                e_feat_i = self.edge_cnn(slabs, ca_i, cb_i)
+                edge_attrs.append((mask, e_feat_i))
+                
+            # Reassemble edge attributes securely aligned with edge_index
+            final_attr = torch.empty((E, self.latent_edge_dim), device=self.device)
+            for m, feat in edge_attrs:
+                final_attr[m] = feat
+                
+            edge_attr_dict[edge_type] = final_attr
+
         x_dict = {"well": batch["well"].x}
         edge_index_dict = {
             edge_type: batch[edge_type].edge_index for edge_type in EDGE_TYPES
-        }
-        edge_attr_dict = {
-            edge_type: batch[edge_type].edge_attr for edge_type in EDGE_TYPES
         }
 
         x = x_dict["well"]
@@ -242,11 +297,12 @@ class HeteroGNNRegressor(L.LightningModule):
             patience=10,
             min_lr=1e-6,
         )
+        monitor_metric = "val_loss" if self.trainer.val_dataloaders else "train_loss"
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
+                "monitor": monitor_metric,
                 "interval": "epoch",
                 "frequency": 1,
             },
