@@ -9,7 +9,7 @@ import torch
 import lightning as L
 from torch import nn
 from torch_geometric.data import HeteroData
-from geothermal.physics_slab import PhysicsSlabExtractor, PhysicsSlabCNN
+from geothermal.physics_slab import PhysicsSlabExtractor, PhysicsSlabCNN, PhysicsSlabSVD
 from torch_geometric.nn import (
     BatchNorm,
     NNConv,
@@ -64,6 +64,8 @@ class HeteroGNNRegressor(L.LightningModule):
         output_dim: int = 1,
         active_channels: list[str] = ["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0", "valid_mask"],
         latent_edge_dim: int = 32,
+        edge_encoder: str = "cnn",
+        svd_weights_path: str | None = None,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -76,7 +78,14 @@ class HeteroGNNRegressor(L.LightningModule):
         self.latent_edge_dim = latent_edge_dim
 
         self.slab_extractor = PhysicsSlabExtractor(active_channels=active_channels)
-        self.edge_cnn = PhysicsSlabCNN(in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim)
+        if edge_encoder == "cnn":
+            self.edge_cnn = PhysicsSlabCNN(in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim)
+        elif edge_encoder == "svd":
+            if svd_weights_path is None:
+                raise ValueError("svd_weights_path must be provided if edge_encoder is 'svd'")
+            self.edge_cnn = PhysicsSlabSVD(svd_weights_path=svd_weights_path, latent_dim=self.latent_edge_dim)
+        else:
+            raise ValueError(f"Unknown edge_encoder: {edge_encoder}")
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()

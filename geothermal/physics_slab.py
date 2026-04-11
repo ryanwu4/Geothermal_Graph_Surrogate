@@ -278,3 +278,75 @@ class PhysicsSlabCNN(nn.Module):
         edge_features = self.mlp(concat_vec)  # (B, latent_dim)
         
         return edge_features
+
+
+class PhysicsSlabSVD(nn.Module):
+    """
+    SVD-based Edge Feature Extractor.
+    Takes [B, C, Z=16, X=32, Y=32] volumetric slabs, flattens them,
+    projects using precomputed SVD weights, injects delta_s (continuous Euclidean distance),
+    and outputs a configured latent edge dimension.
+    """
+    def __init__(self, 
+                 svd_weights_path: str,
+                 latent_dim: int = 32,
+                 k: int = 32):
+        super().__init__()
+        
+        try:
+            state = torch.load(svd_weights_path, weights_only=True)
+            if isinstance(state, torch.Tensor):
+                components = state
+                mean = torch.zeros(components.shape[1], dtype=torch.float32)
+                std = torch.ones(components.shape[1], dtype=torch.float32)
+            else:
+                components = state["components"]
+                mean = state["mean"]
+                std = state["std"]
+        except Exception as e:
+            raise ValueError(f"Failed to load SVD weights from {svd_weights_path}: {e}")
+            
+        M = components.shape[1]
+        self.register_buffer("voxel_mean", mean)
+        self.register_buffer("voxel_std", std)
+        
+        self.svd_proj = nn.Linear(M, k, bias=False)
+        self.svd_proj.weight.data = components
+        self.svd_proj.weight.requires_grad = False
+        
+        # SVD projected output (k) + Euclidean distance (1) -> latent_dim
+        self.mlp = nn.Sequential(
+            nn.BatchNorm1d(k + 1),
+            nn.Linear(k + 1, 32),
+            nn.GELU(),
+            nn.Linear(32, latent_dim)
+        )
+
+    def forward(self, slabs: torch.Tensor, coords_a: torch.Tensor, coords_b: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            slabs: (B, C, Z, X, Y)
+            coords_a: (B, 3) 
+            coords_b: (B, 3)
+        Returns:
+            edge_features: (B, latent_dim)
+        """
+        B = slabs.shape[0]
+        
+        # 1. Flatten the entire multidimensional tensor except batch
+        flat_slabs = slabs.view(B, -1)   # (B, M)
+        
+        # 1.5 Standardize exactly sequentially with SVD precomputation scale
+        flat_slabs = (flat_slabs - self.voxel_mean) / self.voxel_std
+        
+        # 2. Linear projection using SVD base
+        svd_emb = self.svd_proj(flat_slabs) # (B, k)
+        
+        # 3. Distance Injection
+        delta_s = torch.sqrt(torch.sum((coords_a - coords_b)**2, dim=1, keepdim=True))  # (B, 1)
+        
+        # 4. Concatenate and Compress
+        concat_vec = torch.cat([svd_emb, delta_s], dim=1)
+        edge_features = self.mlp(concat_vec)  # (B, latent_dim)
+        
+        return edge_features

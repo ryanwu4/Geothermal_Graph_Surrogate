@@ -129,9 +129,23 @@ def main() -> None:
         default="auto",
         help="GPU indices to use (e.g., '0' or '0,1'). 'auto' means all available GPUs. Default: auto.",
     )
+    parser.add_argument(
+        "--edge-encoder",
+        choices=["cnn", "svd"],
+        default="cnn",
+        help="Model to use for geometric edge encoding.",
+    )
+    parser.add_argument(
+        "--svd-weights-path",
+        type=Path,
+        default=None,
+        help="Path to precomputed SVD weights if edge-encoder is svd.",
+    )
     args = parser.parse_args()
 
-    prediction_level = "node" if args.target in ("node_wept", "node_tp_final") else "graph"
+    prediction_level = (
+        "node" if args.target in ("node_wept", "node_tp_final") else "graph"
+    )
     output_dim = TP_PROFILE_STATS if args.target == "node_tp_final" else 1
 
     L.seed_everything(args.seed, workers=True)
@@ -173,7 +187,7 @@ def main() -> None:
             range(len(graphs_raw)),
             test_size=args.test_fraction,
             random_state=args.seed,
-            shuffle=True, # Keep shuffle=True for non-stratified
+            shuffle=True,  # Keep shuffle=True for non-stratified
         )
 
         val_size_relative = args.val_fraction / (1.0 - args.test_fraction)
@@ -183,7 +197,7 @@ def main() -> None:
             train_val_idx,
             test_size=val_size_relative,
             random_state=args.seed,
-            shuffle=True, # Keep shuffle=True for non-stratified
+            shuffle=True,  # Keep shuffle=True for non-stratified
         )
 
     train_graphs_raw = [graphs_raw[i] for i in train_idx]
@@ -218,12 +232,12 @@ def main() -> None:
         device = torch.device(f"cuda:{args.gpu}")
         for split_subset in [train_graphs, val_graphs, test_graphs]:
             for g in split_subset:
-                g.to(device) # Moves standard PyG nodes/edges
+                g.to(device)  # Moves standard PyG nodes/edges
                 # Manually traverse our custom python wrapper protecting the 3D grid volumes
                 for k, v in g.physics_context.d.items():
                     g.physics_context.d[k] = v.to(device, non_blocking=True)
         # Multiprocessing serialization crashes attempting to fork CUDA tensors via IPC
-        args.num_workers = 0 
+        args.num_workers = 0
         print("Set num_workers=0 to support native CUDA dataset persistence.")
 
     train_loader = DataLoader(
@@ -256,8 +270,18 @@ def main() -> None:
         loss=args.loss,
         prediction_level=prediction_level,
         output_dim=output_dim,
-        active_channels=["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0", "valid_mask"],
+        active_channels=[
+            "PermX",
+            "PermY",
+            "PermZ",
+            "Porosity",
+            "Temperature0",
+            "Pressure0",
+            "valid_mask",
+        ],
         latent_edge_dim=32,
+        edge_encoder=args.edge_encoder,
+        svd_weights_path=str(args.svd_weights_path) if args.svd_weights_path else None,
     )
 
     checkpoint_cb = ModelCheckpoint(
@@ -301,6 +325,12 @@ def main() -> None:
     with open(scaler_path, "wb") as f:
         pickle.dump(scaler, f)
     print(f"Saved scaler: {scaler_path}")
+
+    # PyTorch 2.6 defaults weights_only=True which blocks pathlib.PosixPath deserialization
+    import pathlib
+
+    if hasattr(torch.serialization, "add_safe_globals"):
+        torch.serialization.add_safe_globals([pathlib.PosixPath, pathlib.WindowsPath])
 
     best_model = HeteroGNNRegressor.load_from_checkpoint(best_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
