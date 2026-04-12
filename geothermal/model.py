@@ -62,7 +62,15 @@ class HeteroGNNRegressor(L.LightningModule):
         loss: str,
         prediction_level: str = "graph",  # "graph" or "node"
         output_dim: int = 1,
-        active_channels: list[str] = ["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0", "valid_mask"],
+        active_channels: list[str] = [
+            "PermX",
+            "PermY",
+            "PermZ",
+            "Porosity",
+            "Temperature0",
+            "Pressure0",
+            "valid_mask",
+        ],
         latent_edge_dim: int = 32,
         edge_encoder: str = "cnn",
         svd_weights_path: str | None = None,
@@ -79,11 +87,17 @@ class HeteroGNNRegressor(L.LightningModule):
 
         self.slab_extractor = PhysicsSlabExtractor(active_channels=active_channels)
         if edge_encoder == "cnn":
-            self.edge_cnn = PhysicsSlabCNN(in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim)
+            self.edge_cnn = PhysicsSlabCNN(
+                in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim
+            )
         elif edge_encoder == "svd":
             if svd_weights_path is None:
-                raise ValueError("svd_weights_path must be provided if edge_encoder is 'svd'")
-            self.edge_cnn = PhysicsSlabSVD(svd_weights_path=svd_weights_path, latent_dim=self.latent_edge_dim)
+                raise ValueError(
+                    "svd_weights_path must be provided if edge_encoder is 'svd'"
+                )
+            self.edge_cnn = PhysicsSlabSVD(
+                svd_weights_path=svd_weights_path, latent_dim=self.latent_edge_dim
+            )
         else:
             raise ValueError(f"Unknown edge_encoder: {edge_encoder}")
 
@@ -169,49 +183,51 @@ class HeteroGNNRegressor(L.LightningModule):
             edge_index = batch[edge_type].edge_index
             E = edge_index.shape[1]
             if E == 0:
-                edge_attr_dict[edge_type] = torch.empty((0, self.latent_edge_dim), device=self.device)
+                edge_attr_dict[edge_type] = torch.empty(
+                    (0, self.latent_edge_dim), device=self.device
+                )
                 continue
-                
+
             src_nodes = edge_index[0]
             dst_nodes = edge_index[1]
-            
+
             coords_a = batch["well"].pos_xyz[src_nodes]
             coords_b = batch["well"].pos_xyz[dst_nodes]
             batch_idx = batch["well"].batch[src_nodes]
-            
+
             edge_attrs = []
-            
+
             # Process edges grouped by graph to handle variable-sized physics tensors
             for i in range(batch.num_graphs):
-                mask = (batch_idx == i)
+                mask = batch_idx == i
                 num_edges_i = mask.sum().item()
                 if num_edges_i == 0:
                     continue
-                    
+
                 ca_i = coords_a[mask]
                 cb_i = coords_b[mask]
-                
+
                 # Fetch physics context for this graph
                 phys_ctx = batch.physics_context[i]
                 phys_dict = phys_ctx.d
                 full_shape = phys_ctx.full_shape
-                
+
                 # Expand physics dict to batch size `num_edges_i`
                 phys_expanded = {}
                 for k, v in phys_dict.items():
                     # v is (Z, X, Y), expand to (num_edges_i, Z, X, Y)
                     phys_expanded[k] = v.unsqueeze(0).expand(num_edges_i, -1, -1, -1)
-                
+
                 # Run Extractor + CNN
                 slabs = self.slab_extractor(phys_expanded, ca_i, cb_i, full_shape)
                 e_feat_i = self.edge_cnn(slabs, ca_i, cb_i)
                 edge_attrs.append((mask, e_feat_i))
-                
+
             # Reassemble edge attributes securely aligned with edge_index
             final_attr = torch.empty((E, self.latent_edge_dim), device=self.device)
             for m, feat in edge_attrs:
                 final_attr[m] = feat
-                
+
             edge_attr_dict[edge_type] = final_attr
 
         x_dict = {"well": batch["well"].x}
