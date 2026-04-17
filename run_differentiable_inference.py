@@ -63,6 +63,12 @@ def main() -> None:
         default=0,
         help="GPU device index to use (default: 0). Pass -1 to force CPU.",
     )
+    parser.add_argument(
+        "--export-jl",
+        type=str,
+        default="",
+        help="Path to export the optimized well placement in Julia configuration format.",
+    )
     args = parser.parse_args()
 
     # 1. Load Configurations
@@ -197,8 +203,22 @@ def main() -> None:
     input_dim = batch["well"].x.shape[1]
     global_dim = batch.global_attr.shape[1]
 
+    if args.gpu >= 0 and torch.cuda.is_available():
+        if args.gpu >= torch.cuda.device_count():
+            raise ValueError(
+                f"--gpu {args.gpu} requested but only "
+                f"{torch.cuda.device_count()} GPU(s) available "
+                f"(indices 0–{torch.cuda.device_count() - 1})."
+            )
+        device = torch.device(f"cuda:{args.gpu}")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")
+
     if checkpoint_path.exists():
-        model = HeteroGNNRegressor.load_from_checkpoint(str(checkpoint_path))
+        model = HeteroGNNRegressor.load_from_checkpoint(
+            str(checkpoint_path), map_location=device
+        )
         print(f"Loaded trained model checkpoint from {checkpoint_path}.")
     else:
         model = HeteroGNNRegressor(
@@ -227,17 +247,6 @@ def main() -> None:
         )
         print("Instantiated untrained model for gradient pathway validation.")
 
-    if args.gpu >= 0 and torch.cuda.is_available():
-        if args.gpu >= torch.cuda.device_count():
-            raise ValueError(
-                f"--gpu {args.gpu} requested but only "
-                f"{torch.cuda.device_count()} GPU(s) available "
-                f"(indices 0–{torch.cuda.device_count() - 1})."
-            )
-        device = torch.device(f"cuda:{args.gpu}")
-    else:
-        device = torch.device("cpu")
-    print(f"Using device: {device}")
     model = model.to(device)
     batch = batch.to(device)
 
@@ -282,6 +291,9 @@ def main() -> None:
         loss.backward()
 
         gradients = coords.grad
+        print(
+            f"Original Step {step} Energy: {predicted_energy.item():.4f} Max Grad: {gradients.abs().max().item():.4f}"
+        )
         # print(f"\nOptimization Step {step + 1}/{args.optimization_steps}")
         # print(f"Predicted Energy: {predicted_energy.item():.4f}")
         # print(f"Gradients w.r.t (X, Y, Z):\n{gradients}")
@@ -343,9 +355,9 @@ def main() -> None:
     # Injectors: Manim BLUE  (#58C4DD)
     # Producers: Manim ORANGE (#FF9000)
     # Permeability background: viridis (same as Manim COLOR_LO→MID→HI palette)
-    MANIM_BG = "#000000"       # black background
-    MANIM_BLUE = "#58C4DD"     # Manim BLUE — injectors
-    MANIM_ORANGE = "#FF9000"   # Manim ORANGE — producers
+    MANIM_BG = "#000000"  # black background
+    MANIM_BLUE = "#58C4DD"  # Manim BLUE — injectors
+    MANIM_ORANGE = "#FF9000"  # Manim ORANGE — producers
     MANIM_WHITE = "#FFFFFF"
     MANIM_GREY = "#888888"
 
@@ -392,7 +404,10 @@ def main() -> None:
     # 4a. Static summary plot (PNG)
     # -------------------------------------------------------------------------
     fig, axes = plt.subplots(
-        1, 2, figsize=(22, 8), gridspec_kw={"width_ratios": [1.2, 1]},
+        1,
+        2,
+        figsize=(22, 8),
+        gridspec_kw={"width_ratios": [1.2, 1]},
         facecolor=MANIM_BG,
     )
     ax_map = axes[0]
@@ -438,16 +453,26 @@ def main() -> None:
         )
         # Start marker (circle)
         ax_map.scatter(
-            history[0, w, 0], history[0, w, 1],
-            color=color, marker="o", s=80,
-            edgecolors=MANIM_WHITE, linewidths=1.2, zorder=5,
+            history[0, w, 0],
+            history[0, w, 1],
+            color=color,
+            marker="o",
+            s=80,
+            edgecolors=MANIM_WHITE,
+            linewidths=1.2,
+            zorder=5,
         )
         # End marker (triangle)
         marker_end = "^" if is_inj else "v"
         ax_map.scatter(
-            history[-1, w, 0], history[-1, w, 1],
-            color=color, marker=marker_end, s=200,
-            edgecolors=MANIM_WHITE, linewidths=1.2, zorder=6,
+            history[-1, w, 0],
+            history[-1, w, 1],
+            color=color,
+            marker=marker_end,
+            s=200,
+            edgecolors=MANIM_WHITE,
+            linewidths=1.2,
+            zorder=6,
         )
 
     ax_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
@@ -455,10 +480,15 @@ def main() -> None:
     ax_map.set_title(
         f"Well Optimization — {args.optimization_steps} Steps\n"
         f"Background: Normalized Log PermX (Z={z_slice})",
-        fontsize=TITLE_SIZE, color=MANIM_WHITE,
+        fontsize=TITLE_SIZE,
+        color=MANIM_WHITE,
     )
-    ax_map.legend(fontsize=LEGEND_SIZE, facecolor="#111111", edgecolor=MANIM_GREY,
-                  labelcolor=MANIM_WHITE)
+    ax_map.legend(
+        fontsize=LEGEND_SIZE,
+        facecolor="#111111",
+        edgecolor=MANIM_GREY,
+        labelcolor=MANIM_WHITE,
+    )
 
     ax_energy.plot(
         range(len(energy_unnorm)),
@@ -471,13 +501,18 @@ def main() -> None:
         markeredgewidth=1.0,
         markersize=7,
     )
-    ax_energy.set_xlabel("Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE)
+    ax_energy.set_xlabel(
+        "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
+    )
     ax_energy.set_ylabel(
-        "Total Energy Production (Non-Normalized)", fontsize=FONT_SIZE, color=MANIM_WHITE
+        "Total Energy Production (Non-Normalized)",
+        fontsize=FONT_SIZE,
+        color=MANIM_WHITE,
     )
     ax_energy.set_title(
         "Predicted Energy Growth over Differentiable Steps",
-        fontsize=TITLE_SIZE, color=MANIM_WHITE,
+        fontsize=TITLE_SIZE,
+        color=MANIM_WHITE,
     )
     ax_energy.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
 
@@ -507,8 +542,9 @@ def main() -> None:
 
     # Build the figure once; reuse it every frame (Agg backend renders to buffer)
     fig_anim, axes_anim = plt.subplots(
-        1, 2,
-        figsize=(22, 8),                          # identical size to static PNG
+        1,
+        2,
+        figsize=(22, 8),  # identical size to static PNG
         gridspec_kw={"width_ratios": [1.2, 1]},  # identical ratios to static PNG
         facecolor=MANIM_BG,
     )
@@ -530,13 +566,19 @@ def main() -> None:
     ax_anim_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
     ax_anim_map.set_ylabel("Y Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
 
-    ax_anim_en.set_xlabel("Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE)
+    ax_anim_en.set_xlabel(
+        "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
+    )
     ax_anim_en.set_ylabel(
-        "Total Energy Production\n(Non-Normalized)", fontsize=FONT_SIZE, color=MANIM_WHITE
+        "Total Energy Production\n(Non-Normalized)",
+        fontsize=FONT_SIZE,
+        color=MANIM_WHITE,
     )
     ax_anim_en.set_xlim(-0.5, len(energy_unnorm) - 0.5)
     en_margin = (energy_unnorm.max() - energy_unnorm.min()) * 0.12 + 1e-3
-    ax_anim_en.set_ylim(energy_unnorm.min() - en_margin, energy_unnorm.max() + en_margin)
+    ax_anim_en.set_ylim(
+        energy_unnorm.min() - en_margin, energy_unnorm.max() + en_margin
+    )
     ax_anim_en.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
 
     # Pre-create all mutable artists (updated via set_data each frame)
@@ -551,31 +593,60 @@ def main() -> None:
             seen_labels.add(label_str)
 
         (trail,) = ax_anim_map.plot(
-            [], [], color=color, alpha=0.8, linewidth=2,
-            solid_capstyle="round", label=leg_label,
+            [],
+            [],
+            color=color,
+            alpha=0.8,
+            linewidth=2,
+            solid_capstyle="round",
+            label=leg_label,
         )
         (dot,) = ax_anim_map.plot(
-            [], [], marker="o", color=color, markersize=10,
-            markeredgecolor=MANIM_WHITE, markeredgewidth=1.5,
-            linestyle="None", zorder=7,
+            [],
+            [],
+            marker="o",
+            color=color,
+            markersize=10,
+            markeredgecolor=MANIM_WHITE,
+            markeredgewidth=1.5,
+            linestyle="None",
+            zorder=7,
         )
         trail_lines.append(trail)
         dot_artists.append(dot)
 
     ax_anim_map.legend(
-        fontsize=LEGEND_SIZE, facecolor="#111111",
-        edgecolor=MANIM_GREY, labelcolor=MANIM_WHITE, loc="upper right",
+        fontsize=LEGEND_SIZE,
+        facecolor="#111111",
+        edgecolor=MANIM_GREY,
+        labelcolor=MANIM_WHITE,
+        loc="upper right",
     )
 
     (en_line,) = ax_anim_en.plot(
-        [], [], color=MANIM_BLUE, linewidth=2, marker="o", markersize=5,
-        markerfacecolor=MANIM_ORANGE, markeredgecolor=MANIM_WHITE, markeredgewidth=1.0,
+        [],
+        [],
+        color=MANIM_BLUE,
+        linewidth=2,
+        marker="o",
+        markersize=5,
+        markerfacecolor=MANIM_ORANGE,
+        markeredgecolor=MANIM_WHITE,
+        markeredgewidth=1.0,
     )
     en_dot = ax_anim_en.scatter(
-        [], [], color=MANIM_ORANGE, s=120, edgecolors=MANIM_WHITE, linewidths=1.5, zorder=7,
+        [],
+        [],
+        color=MANIM_ORANGE,
+        s=120,
+        edgecolors=MANIM_WHITE,
+        linewidths=1.5,
+        zorder=7,
     )
     title_obj = ax_anim_map.set_title("", fontsize=TITLE_SIZE, color=MANIM_WHITE)
-    ax_anim_en.set_title("Predicted Energy Growth", fontsize=TITLE_SIZE, color=MANIM_WHITE)
+    ax_anim_en.set_title(
+        "Predicted Energy Growth", fontsize=TITLE_SIZE, color=MANIM_WHITE
+    )
 
     plt.tight_layout()
 
@@ -625,9 +696,30 @@ def main() -> None:
         append_images=pil_frames[1:],
         duration=durations,
         loop=0,
-        optimize=False,
     )
     print(f"Saved optimization animation to {gif_path}")
+
+    if args.export_jl:
+        final_coords = history[-1]
+        with open(args.export_jl, "w") as f:
+            f.write("# Auto-generated by Differentiable Inference Proxy\n")
+            f.write("wells = [\n")
+            for w in range(num_wells):
+                x, y, z = final_coords[w]
+                # Map continuous [X, Y, Z] to 1-based [I, J, K].
+                # Note: 'x' bounds natively to proxy axis 1 (nx=70), which is simulation 'j'.
+                # 'y' bounds natively to proxy axis 2 (ny=76), which is simulation 'i'.
+                j_idx = int(round(float(x))) + 1
+                i_idx = int(round(float(y))) + 1
+                k_idx = int(round(float(z))) + 1
+
+                is_inj = is_injector[w] > 0.5
+                well_type = '"INJECTOR"' if is_inj else '"PRODUCER"'
+                rate = 8000.0 if is_inj else -8000.0
+
+                f.write(f"    ({i_idx}, {j_idx}, {k_idx}, {well_type}, {rate}),\n")
+            f.write("]\n")
+        print(f"Exported optimized well configuration to {args.export_jl}")
 
 
 if __name__ == "__main__":

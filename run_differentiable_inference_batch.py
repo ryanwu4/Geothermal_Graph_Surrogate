@@ -784,8 +784,8 @@ def main() -> None:
             f.write("wells = [\n")
             for w in range(num_wells):
                 x, y, z = final_coords[w]
-                i_idx = int(round(float(x))) + 1
-                j_idx = int(round(float(y))) + 1
+                j_idx = int(round(float(x))) + 1
+                i_idx = int(round(float(y))) + 1
                 k_idx = int(round(float(z))) + 1
 
                 is_inj = is_injector_list[w]

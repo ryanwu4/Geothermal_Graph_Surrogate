@@ -1,0 +1,20 @@
+{
+    "geology_h5_file": "data_test/v2.5_0111.h5",
+    "checkpoint": "trained/withheld_0p_totalenergy/checkpoints/best-epoch=064-val_loss=0.0587.ckpt",
+    "scaler_path": "trained/withheld_0p_totalenergy/checkpoints/scaler.pkl",
+    "norm_config": "trained/norm_config.json",
+    "wells": [
+        {"x": 21, "y": 27, "depth": 46, "type": "injector"},
+        {"x": 22, "y": 1,  "depth": 35, "type": "injector"},
+        {"x": 23, "y": 36, "depth": 50, "type": "producer"},
+        {"x": 28, "y": 23, "depth": 50, "type": "producer"},
+        {"x": 30, "y": 16, "depth": 50, "type": "producer"},
+        {"x": 30, "y": 47, "depth": 50, "type": "producer"},
+        {"x": 36, "y": 22, "depth": 50, "type": "producer"},
+        {"x": 36, "y": 31, "depth": 50, "type": "producer"},
+        {"x": 36, "y": 56, "depth": 47, "type": "injector"},
+        {"x": 41, "y": 10, "depth": 40, "type": "injector"},
+        {"x": 47, "y": 50, "depth": 38, "type": "injector"},
+        {"x": 50, "y": 31, "depth": 50, "type": "injector"}
+    ]
+}
