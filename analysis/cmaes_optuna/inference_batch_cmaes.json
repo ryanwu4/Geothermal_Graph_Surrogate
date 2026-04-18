@@ -1,0 +1,63 @@
+{
+    "geology_h5_files": [
+        "data_test/v2.5_0111.h5",
+        "data_test/v2.5_1203.h5",
+        "data_test/v2.5_1428.h5"
+    ],
+    "checkpoint": "trained/withheld_0p_totalenergy/checkpoints/best-epoch=064-val_loss=0.0587.ckpt",
+    "scaler_path": "trained/withheld_0p_totalenergy/checkpoints/scaler.pkl",
+    "norm_config": "trained/norm_config.json",
+    "num_samples_N": 2500,
+    "batch_size_M": 2,
+    "edge_buffer": 10,
+    "wells": [
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        }
+    ]
+}
