@@ -42,6 +42,54 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 PROPERTIES = ["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0"]
 PERM_PROPS = {"PermX", "PermY", "PermZ"}
 
+DEFAULT_ECONOMICS_CONFIG = Path(__file__).parent / "configs" / "economics.json"
+
+
+def load_economics_config(path: Path) -> dict:
+    with path.open("r") as f:
+        economics = json.load(f)
+
+    required = ["ENERGY_PRICE", "DISCOUNT_FACTOR"]
+    missing = [k for k in required if k not in economics]
+    if missing:
+        raise ValueError(
+            f"Economics config is missing required keys: {missing}. "
+            f"Found keys: {sorted(economics.keys())}"
+        )
+
+    return economics
+
+
+def compute_discounted_net_energy_revenue(
+    energy_prod_rate: np.ndarray,
+    energy_inj_rate: np.ndarray,
+    economics: dict,
+) -> float:
+    """Compute discounted net energy revenue from annual field energy rates.
+
+    This target intentionally excludes CAPEX and OPEX so geometry-linked costs can be
+    assembled later in differentiable optimization.
+    """
+    prod = np.asarray(energy_prod_rate, dtype=np.float64).reshape(-1)
+    inj = np.asarray(energy_inj_rate, dtype=np.float64).reshape(-1)
+    if prod.shape != inj.shape:
+        raise ValueError(
+            f"Shape mismatch for energy rates: prod {prod.shape} vs inj {inj.shape}"
+        )
+
+    discount_factor = float(economics["DISCOUNT_FACTOR"])
+    if discount_factor <= -1.0:
+        raise ValueError(f"DISCOUNT_FACTOR must be > -1.0, got {discount_factor}")
+
+    # ENERGY_PRICE is in currency/kWh; convert to currency/kJ.
+    energy_price_kj = float(economics["ENERGY_PRICE"]) / 3600.0
+
+    net_energy_rate = prod - inj
+    years = np.arange(1, len(net_energy_rate) + 1, dtype=np.float64)
+    discount = (1.0 / (1.0 + discount_factor)) ** years
+    discounted_revenue = np.sum(net_energy_rate * energy_price_kj * discount)
+    return float(discounted_revenue)
+
 
 def get_valid_mask(src_group: h5py.Group) -> np.ndarray:
     """Create a boolean mask of valid cells (ignoring sentinel values like -999)."""
@@ -110,7 +158,8 @@ def compute_chunk_stats(filepath: Path) -> dict:
 def process_file_and_save(
     filepath: Path,
     output_h5_path: Path,
-    norm_config: dict
+    norm_config: dict,
+    economics: dict,
 ) -> dict:
     """Read a file, normalize it using the config, completely crop it, and save to output H5."""
     try:
@@ -130,6 +179,12 @@ def process_file_and_save(
 
             energy_total = src["Output/FieldEnergyProductionTotal"][...].astype(np.float32)
             energy_rate = src["Output/FieldEnergyProductionRate"][...].astype(np.float32)
+            energy_inj_rate = src["Output/FieldEnergyInjectionRate"][...].astype(np.float32)
+            discounted_net_revenue = compute_discounted_net_energy_revenue(
+                energy_rate,
+                energy_inj_rate,
+                economics,
+            )
             well_wept = extract_wept_for_wells(src, x_idx, y_idx, depth)
             well_tp = extract_well_tp_profiles(src, is_well, x_idx, y_idx)
             vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
@@ -174,6 +229,8 @@ def process_file_and_save(
                 "wells": wells,
                 "energy_total": energy_total,
                 "energy_rate": energy_rate,
+                "energy_inj_rate": energy_inj_rate,
+                "discounted_net_revenue": np.float32(discounted_net_revenue),
                 "well_wept": well_wept,
                 "well_tp": well_tp,
                 "vertical_profiles": vertical_profiles,
@@ -191,6 +248,12 @@ def main():
     parser.add_argument("--input-dir", type=Path, required=True, help="Directory with original .h5 files")
     parser.add_argument("--output-h5", type=Path, required=True, help="Path for output normalized .h5 dataset")
     parser.add_argument("--norm-config", type=Path, default=Path("norm_config.json"), help="Path to save/load normalization JSON file")
+    parser.add_argument(
+        "--economics-config",
+        type=Path,
+        default=DEFAULT_ECONOMICS_CONFIG,
+        help="Path to economics JSON used to compute discounted net revenue target",
+    )
     parser.add_argument("--workers", type=int, default=min(8, mp.cpu_count()), help="Number of workers")
     parser.add_argument("--compute-only", action="store_true", help="Only compute and save norm_config, don't build H5")
     
@@ -200,6 +263,12 @@ def main():
     if not h5_files:
         logging.error(f"No H5 files found in {args.input_dir}")
         return
+
+    if not args.economics_config.exists():
+        logging.error(f"Economics config not found: {args.economics_config}")
+        return
+
+    economics = load_economics_config(args.economics_config)
 
     # Pass 1: Compute or Load Global Normalization Statistics
     if args.norm_config.exists() and not args.compute_only:
@@ -239,9 +308,25 @@ def main():
         for p in PROPERTIES:
             out_f.attrs[f"norm_{p}_min"] = global_stats[p]["min"]
             out_f.attrs[f"norm_{p}_max"] = global_stats[p]["max"]
+        out_f.attrs["target_graph_discounted_net_revenue_energy_price_kwh"] = float(
+            economics["ENERGY_PRICE"]
+        )
+        out_f.attrs["target_graph_discounted_net_revenue_discount_factor"] = float(
+            economics["DISCOUNT_FACTOR"]
+        )
+        out_f.attrs["target_graph_discounted_net_revenue_formula"] = (
+            "sum_t ((FEPR_t - FEIR_t) * (ENERGY_PRICE/3600) * (1/(1+r))^t), t starts at 1"
+        )
+        out_f.attrs["target_graph_discounted_net_revenue_includes_capex"] = 0
+        out_f.attrs["target_graph_discounted_net_revenue_includes_opex"] = 0
 
         from functools import partial
-        process_fn = partial(process_file_and_save, output_h5_path=args.output_h5, norm_config=global_stats)
+        process_fn = partial(
+            process_file_and_save,
+            output_h5_path=args.output_h5,
+            norm_config=global_stats,
+            economics=economics,
+        )
         
         with mp.Pool(args.workers) as pool:
             for res in tqdm(pool.imap_unordered(process_fn, h5_files), total=len(h5_files)):
@@ -251,6 +336,11 @@ def main():
                     # Store continuous target and well metadata
                     grp.create_dataset("field_energy_production_total", data=res["energy_total"])
                     grp.create_dataset("field_energy_production_rate", data=res["energy_rate"])
+                    grp.create_dataset("field_energy_injection_rate", data=res["energy_inj_rate"])
+                    grp.create_dataset(
+                        "field_discounted_net_revenue",
+                        data=res["discounted_net_revenue"],
+                    )
                     grp.create_dataset("well_wept", data=res["well_wept"], compression="gzip")
                     grp.create_dataset("well_tp_profiles", data=res["well_tp"], compression="gzip")
                     grp.create_dataset("well_vertical_profile", data=res["vertical_profiles"], compression="gzip")

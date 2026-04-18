@@ -112,7 +112,8 @@ Input: HeteroData graph
 python preprocess_h5.py \
     --input-dir data/ \
     --output-h5 compiled_full_CNN.h5 \
-    --norm-config norm_config.json
+    --norm-config norm_config.json \
+    --economics-config configs/economics_discounted_revenue.json
 ```
 
 This processes each raw simulation HDF5 file:
@@ -121,6 +122,10 @@ This processes each raw simulation HDF5 file:
 3. Identifies valid rock cells and computes Z-axis depth cutoff (first layer where ≥95% of cells are inactive)
 4. Log-transforms permeability, then min-max normalizes all physics channels to [0, 1]
 5. Saves the processed 3D physics tensors and well tables into a compiled HDF5
+
+For discounted-revenue training, preprocessing also computes:
+- `field_discounted_net_revenue`: discounted sum of net energy revenue from annual field rates
+- uses `ENERGY_PRICE` and `DISCOUNT_FACTOR` loaded from `--economics-config`
 
 **First run**: computes global normalization statistics across all files and writes `norm_config.json`.
 **Subsequent runs**: reuses `norm_config.json` for consistent normalization.
@@ -133,10 +138,8 @@ Use `--compute-only` to only compute normalization stats without building the H5
 python train.py \
     --h5-path compiled_full_CNN.h5 \
     --target graph_energy_total \
-    --max-epochs 180 \
-    --batch-size 16 \
-    --stratified-split \
     --gpu 0
+    --cache-to-gpu
 ```
 
 **With top-k% withholding** (removes top 10% of runs by energy production):
@@ -177,6 +180,7 @@ The JSON configuration file specifies the geology, model, and initial well layou
     "checkpoint": "trained/.../checkpoints/best-*.ckpt",
     "scaler_path": "trained/.../checkpoints/scaler.pkl",
     "norm_config": "trained/norm_config.json",
+    "objective_target": "graph_discounted_net_revenue",
     "wells": [
         {"x": 15, "y": 10, "depth": 50, "type": "injector"},
         {"x": 19, "y": 14, "type": "producer"}
@@ -191,6 +195,7 @@ The JSON configuration file specifies the geology, model, and initial well layou
 | `checkpoint` | Yes | Path to trained model `.ckpt` file |
 | `scaler_path` | Yes | Path to `scaler.pkl` saved during training |
 | `norm_config` | No | Path to `norm_config.json` (default: `norm_config.json`) |
+| `objective_target` | No | Graph target to optimize: `graph_energy_total`, `graph_energy_rate`, or `graph_discounted_net_revenue` |
 | `wells` | Yes | Array of well definitions (see below) |
 
 **Well fields:**
@@ -205,11 +210,11 @@ The script:
 1. Reads raw geology from the HDF5 file and normalizes it on-the-fly using `norm_config.json`
 2. Builds a `PhysicsContext` with the normalized 3D tensors
 3. Constructs a graph from the well layout and runs it through the trained model
-4. Optimizes well (X, Y, Z) coordinates via Adam gradient ascent to maximize predicted energy
+4. Optimizes well (X, Y, Z) coordinates via Adam gradient ascent to maximize the configured graph-level objective
 5. **Feasible direction projection**: gradients pointing outside the grid domain are projected along the boundary; Adam momentum is flushed for boundary-violating components
-6. Outputs a 2D trajectory plot (wells over log-PermX background) alongside an energy-vs-iteration curve to `plots/`
+6. Outputs a 2D trajectory plot (wells over log-PermX background) alongside an objective-vs-iteration curve to `plots/`
 
-All plots are saved with timestamps (`plots/well_trajectories_2D_Energy_YYYYMMDD_HHMMSS.png`) to prevent overwriting.
+All plots are saved with timestamps to prevent overwriting.
 
 ---
 
@@ -219,6 +224,7 @@ All plots are saved with timestamps (`plots/well_trajectories_2D_Energy_YYYYMMDD
 |---|---|---|---|
 | `graph_energy_total` | Graph | 1 | Total field energy production (cumulative, final timestep) |
 | `graph_energy_rate` | Graph | 1 | Field energy production rate (first timestep) |
+| `graph_discounted_net_revenue` | Graph | 1 | Discounted net energy revenue, computed from annual `(production - injection)` energy rates |
 | `node_wept` | Node | 1 | Well energy production timeseries per extractor well |
 | `node_tp_final` | Node | 6 | Penultimate-timestep T/P profile statistics (mean/min/max for temp & pressure) |
 
@@ -257,6 +263,8 @@ conda activate geothermal-pomdp
 ├── run_differentiable_inference.py     # Differentiable well placement optimizer
 ├── compile_minimal_geothermal_h5.py    # Well extraction utilities
 ├── example_inference.json              # Sample JSON config for inference
+├── configs/
+│   └── economics_discounted_revenue.json  # Economics constants for discounted-revenue target
 ├── norm_config.json                    # Global normalization parameters
 │
 ├── geothermal/                         # Core package

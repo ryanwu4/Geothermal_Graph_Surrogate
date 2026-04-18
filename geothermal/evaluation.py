@@ -113,7 +113,9 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
 
 
 def save_error_scatter_plots(
-    output_dir: Path, split_data: dict[str, tuple[np.ndarray, np.ndarray]]
+    output_dir: Path,
+    split_data: dict[str, tuple[np.ndarray, np.ndarray]],
+    target_label: str = "Target",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -158,13 +160,13 @@ def save_error_scatter_plots(
     axes[0].plot([c_min, c_max], [c_min, c_max], linestyle="--", color="red")
     axes[0].set_xlim(c_min, c_max)
     axes[0].set_ylim(c_min, c_max)
-    axes[0].set_xlabel("Actual Energy Prod. Rate (Core 96%)")
-    axes[0].set_ylabel("Predicted Energy Prod. Rate")
+    axes[0].set_xlabel(f"Actual {target_label} (Core 96%)")
+    axes[0].set_ylabel(f"Predicted {target_label}")
     axes[0].set_title("Predicted vs Actual")
     axes[0].legend()
 
     axes[1].axhline(0.0, linestyle="--", color="red")
-    axes[1].set_xlabel("Actual Energy Prod. Rate")
+    axes[1].set_xlabel(f"Actual {target_label}")
     axes[1].set_ylabel("Percentage Error % (Clamped)")
     axes[1].set_title("Relative Error vs Actual")
     axes[1].legend()
@@ -446,9 +448,7 @@ def save_predictions_csv(
 
     with output_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(
-            ["split", "case_id", "node_index", "mean_wept_sequence_abs_error"]
-        )
+        writer.writerow(["split", "case_id", "sample_index", "mean_abs_error"])
         for i, (cid, ae) in enumerate(zip(case_ids, mean_node_err)):
             writer.writerow([split_name, cid, i, float(ae)])
     print(f"Saved predictions: {output_path}")

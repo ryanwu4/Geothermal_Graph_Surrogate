@@ -17,6 +17,45 @@ from torch_geometric.data import HeteroData
 from geothermal.model import EDGE_TYPES, TP_PROFILE_STATS
 
 
+def _compute_discounted_net_revenue_from_group(group: h5py.Group) -> float:
+    """Fallback computation for graph_discounted_net_revenue targets.
+
+    Uses production/injection energy rate arrays and dataset attrs written by preprocess_h5.
+    """
+    if "field_energy_production_rate" not in group or "field_energy_injection_rate" not in group:
+        raise KeyError(
+            "Missing field_energy_production_rate or field_energy_injection_rate in compiled dataset"
+        )
+
+    attrs = group.file.attrs
+    if "target_graph_discounted_net_revenue_energy_price_kwh" not in attrs:
+        raise KeyError(
+            "Missing target_graph_discounted_net_revenue_energy_price_kwh in dataset attrs"
+        )
+    if "target_graph_discounted_net_revenue_discount_factor" not in attrs:
+        raise KeyError(
+            "Missing target_graph_discounted_net_revenue_discount_factor in dataset attrs"
+        )
+
+    energy_price_kwh = float(attrs["target_graph_discounted_net_revenue_energy_price_kwh"])
+    discount_factor = float(attrs["target_graph_discounted_net_revenue_discount_factor"])
+    if discount_factor <= -1.0:
+        raise ValueError(f"Invalid discount factor in dataset attrs: {discount_factor}")
+
+    prod = group["field_energy_production_rate"][:].astype(np.float64).reshape(-1)
+    inj = group["field_energy_injection_rate"][:].astype(np.float64).reshape(-1)
+    if prod.shape != inj.shape:
+        raise ValueError(
+            f"Shape mismatch for production/injection rates: {prod.shape} vs {inj.shape}"
+        )
+
+    energy_price_kj = energy_price_kwh / 3600.0
+    net = prod - inj
+    years = np.arange(1, len(net) + 1, dtype=np.float64)
+    discount = (1.0 / (1.0 + discount_factor)) ** years
+    return float(np.sum(net * energy_price_kj * discount))
+
+
 class PhysicsContext:
     """Wraps physics tensors so PyG doesn't try to vertically stack variable-sized Z fields across graphs."""
 
@@ -286,6 +325,13 @@ def load_hetero_graphs(
             elif target == "graph_energy_rate":
                 target_array = group["field_energy_production_rate"][:]
                 target_val = float(target_array.flat[-1])
+                tp_t1, well_wept = None, None
+
+            elif target == "graph_discounted_net_revenue":
+                if "field_discounted_net_revenue" in group:
+                    target_val = float(group["field_discounted_net_revenue"][()])
+                else:
+                    target_val = _compute_discounted_net_revenue_from_group(group)
                 tp_t1, well_wept = None, None
             else:
                 raise ValueError(f"Unknown target: {target}")

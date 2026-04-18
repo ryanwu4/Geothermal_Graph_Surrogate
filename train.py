@@ -104,16 +104,20 @@ def main() -> None:
             "node_tp_final",
             "graph_energy_total",
             "graph_energy_rate",
+            "graph_discounted_net_revenue",
         ],
         default="graph_energy_total",
-        help="Prediction target: node-level WEPT, node-level next-timestep T/P, or graph-level energy.",
+        help=(
+            "Prediction target: node-level WEPT, node-level next-timestep T/P, "
+            "graph-level energy, or graph-level discounted net revenue."
+        ),
     )
     parser.add_argument(
         "--withhold-top-pct",
         type=float,
         default=0.0,
         help=(
-            "Withhold the top N%% of datapoints (by total field energy production) "
+            "Withhold the top N%% of datapoints (by the selected target) "
             "from training. Withheld run IDs are saved alongside the plots. "
             "Default: 0 (disabled)."
         ),
@@ -344,6 +348,15 @@ def main() -> None:
         "test": test_graphs,
     }
 
+    target_labels = {
+        "graph_energy_total": "Total Energy Production",
+        "graph_energy_rate": "Energy Production Rate",
+        "graph_discounted_net_revenue": "Discounted Net Revenue",
+        "node_wept": "WEPT",
+        "node_tp_final": "TP Profile Statistic",
+    }
+    target_label = target_labels.get(args.target, "Target")
+
     print("\nMetrics in original target units:")
 
     split_eval_data = {}
@@ -394,7 +407,7 @@ def main() -> None:
             plots_dir, split_name, graphs, case_ids, y_true, y_pred
         )
 
-    save_error_scatter_plots(plots_dir, split_eval_data)
+    save_error_scatter_plots(plots_dir, split_eval_data, target_label=target_label)
 
     save_loss_curve_plot(
         Path(logger.log_dir) / "metrics.csv", plots_dir / "loss_over_time.png"
