@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import argparse
 import os
+import json
 import pickle
 from pathlib import Path
 
@@ -360,6 +361,14 @@ def main() -> None:
     print("\nMetrics in original target units:")
 
     split_eval_data = {}
+    metrics_report: dict[str, object] = {
+        "target": args.target,
+        "target_label": target_label,
+        "prediction_level": prediction_level,
+        "output_dim": output_dim,
+        "splits": {},
+    }
+    metrics_log_lines: list[str] = ["Metrics in original target units:"]
 
     for split_name, graphs in split_graphs.items():
         y_true, y_pred, case_ids = evaluate_split(
@@ -368,11 +377,19 @@ def main() -> None:
         split_eval_data[split_name] = (y_true, y_pred)
 
         metrics = compute_metrics(y_true, y_pred)
-        print(
+        split_line = (
             f"  {split_name:<5} | MAE={metrics['mae']:>10.1f} | "
             f"MedAE={metrics['medae']:>10.1f} | RMSE={metrics['rmse']:>10.1f} | "
             f"MAPE={metrics['mape']:>5.1f}% | R2={metrics['r2']:>6.4f}"
         )
+        print(split_line)
+        metrics_log_lines.append(split_line)
+
+        split_report: dict[str, object] = {
+            "case_count": len(set(case_ids)),
+            "sample_count": int(y_true.shape[0]),
+            "metrics": metrics,
+        }
 
         # Per-statistic breakdown for multi-output targets
         if output_dim > 1 and y_true.shape[1] == output_dim:
@@ -387,12 +404,20 @@ def main() -> None:
                 ],
             }
             names = stat_names.get(output_dim, [f"dim_{j}" for j in range(output_dim)])
+            per_output_report: dict[str, dict[str, float]] = {}
             for j, name in enumerate(names):
                 m_j = compute_metrics(y_true[:, j : j + 1], y_pred[:, j : j + 1])
-                print(
+                dim_line = (
                     f"    {name:>8s}: MAE={m_j['mae']:>8.2f} | "
                     f"MAPE={m_j['mape']:>5.1f}% | R2={m_j['r2']:>7.4f}"
                 )
+                print(dim_line)
+                metrics_log_lines.append(dim_line)
+                per_output_report[name] = m_j
+            split_report["per_output_metrics"] = per_output_report
+
+        metrics_report["splits"][split_name] = split_report
+
         save_predictions_csv(
             plots_dir / f"{split_name}_predictions.csv",
             split_name,
@@ -408,6 +433,15 @@ def main() -> None:
         )
 
     save_error_scatter_plots(plots_dir, split_eval_data, target_label=target_label)
+
+    metrics_txt_path = plots_dir / "metrics_summary.txt"
+    metrics_txt_path.write_text("\n".join(metrics_log_lines) + "\n")
+    print(f"Saved metrics text summary: {metrics_txt_path}")
+
+    metrics_json_path = plots_dir / "metrics_summary.json"
+    with metrics_json_path.open("w") as f:
+        json.dump(metrics_report, f, indent=2)
+    print(f"Saved metrics JSON summary: {metrics_json_path}")
 
     save_loss_curve_plot(
         Path(logger.log_dir) / "metrics.csv", plots_dir / "loss_over_time.png"

@@ -82,16 +82,9 @@ def main() -> None:
     if not scaler_path:
         raise ValueError("Missing 'scaler_path' in JSON configuration")
 
-    geology_files = config.get("geology_h5_files", [config.get("geology_h5_file")])
-    if not geology_files or geology_files[0] is None:
-        raise ValueError(
-            "Missing 'geology_h5_files' or 'geology_h5_file' in configuration"
-        )
-
-    geology_paths = [Path(g) for g in geology_files]
-    for gp in geology_paths:
-        if not gp.exists():
-            raise FileNotFoundError(f"Geology H5 file not found: {gp}")
+    geology_path = Path(config["geology_h5_file"])
+    if not geology_path.exists():
+        raise FileNotFoundError(f"Geology H5 file not found: {geology_path}")
 
     norm_config_path = Path(config.get("norm_config", "norm_config.json"))
     if not norm_config_path.exists():
@@ -109,128 +102,102 @@ def main() -> None:
     else:
         raise FileNotFoundError(f"Scaler not found at {scaler_path}")
 
-    # 3. Process all Geology H5 files & map wells natively
-    print(f"Loading raw geology data from {len(geology_paths)} geology file(s)...")
-    target_graphs = []
-    backgrounds = []
-    geology_names = []
-    grid_shapes = []
+    # 3. Process Geology H5 & Map Wells Natively
+    print(f"Loading raw geology data from {geology_path}...")
+    with h5py.File(geology_path, "r") as src:
+        valid_mask = get_valid_mask(src)
+        z_cutoff = find_z_cutoff(valid_mask, invalid_threshold=0.95)
+        valid_mask_cropped = valid_mask[:z_cutoff]
 
-    for geo_idx, geology_path in enumerate(geology_paths):
-        print(f"  - Geology {geo_idx + 1}/{len(geology_paths)}: {geology_path}")
-        with h5py.File(geology_path, "r") as src:
-            valid_mask = get_valid_mask(src)
-            z_cutoff = find_z_cutoff(valid_mask, invalid_threshold=0.95)
-            valid_mask_cropped = valid_mask[:z_cutoff]
+        print(f"Depth horizon cutoff at Z={z_cutoff}")
 
-            print(f"    Depth horizon cutoff at Z={z_cutoff}")
+        # Prepare normalized tensors
+        physics_dict = {}
+        for prop in PROPERTIES:
+            data = src[f"Input/{prop}"][:z_cutoff].astype(np.float32)
+            if prop in PERM_PROPS:
+                data = np.log10(np.maximum(data, 1e-15))
 
-            # Prepare normalized tensors
-            physics_dict = {}
-            for prop in PROPERTIES:
-                data = src[f"Input/{prop}"][:z_cutoff].astype(np.float32)
-                if prop in PERM_PROPS:
-                    data = np.log10(np.maximum(data, 1e-15))
+            p_min = norm_config[prop]["min"]
+            p_max = norm_config[prop]["max"]
 
-                p_min = norm_config[prop]["min"]
-                p_max = norm_config[prop]["max"]
+            if p_max > p_min:
+                normalized = (data - p_min) / (p_max - p_min)
+            else:
+                normalized = np.zeros_like(data)
 
-                if p_max > p_min:
-                    normalized = (data - p_min) / (p_max - p_min)
-                else:
-                    normalized = np.zeros_like(data)
+            normalized = np.clip(normalized, 0.0, 1.0)
+            normalized[~valid_mask_cropped] = 0.0
+            physics_dict[prop] = torch.tensor(normalized, dtype=torch.float32)
 
-                normalized = np.clip(normalized, 0.0, 1.0)
-                normalized[~valid_mask_cropped] = 0.0
-                physics_dict[prop] = torch.tensor(normalized, dtype=torch.float32)
-
-            physics_dict["valid_mask"] = torch.tensor(
-                valid_mask_cropped, dtype=torch.float32
-            )
-            full_shape = (z_cutoff, valid_mask.shape[1], valid_mask.shape[2])
-            grid_shapes.append(full_shape)
-
-            temp0_full = src["Input/Temperature0"][:]
-            nx = full_shape[1]
-            ny = full_shape[2]
-
-            is_well = np.zeros((z_cutoff, nx, ny), dtype=np.int32)
-            inj_rate = np.zeros((z_cutoff, nx, ny), dtype=np.float32)
-
-            for w in config["wells"]:
-                x_raw, y_raw = w["x"], w["y"]
-                x = int(round(float(x_raw)))
-                y = int(round(float(y_raw)))
-                w_type = w.get("type", "injector").lower()
-                if x < 0 or x >= nx or y < 0 or y >= ny:
-                    print(
-                        f"Warning: Well at ({x_raw}, {y_raw}) is out of bounds "
-                        f"for {geology_path.name} (Grid is {nx}x{ny})"
-                    )
-                    continue
-
-                well_depth = min(int(w.get("depth", z_cutoff)), z_cutoff)
-
-                for z in range(well_depth):
-                    if temp0_full[z, x, y] <= -900:
-                        is_well[z, x, y] = -999
-                        inj_rate[z, x, y] = -999
-                    else:
-                        is_well[z, x, y] = 1
-                        if w_type == "injector":
-                            inj_rate[z, x, y] = 8000.0
-                        else:
-                            inj_rate[z, x, y] = -8000.0
-
-            (
-                x_idx,
-                y_idx,
-                depth,
-                inj,
-                perm_x,
-                perm_y,
-                perm_z,
-                porosity,
-                temp0,
-                press0,
-                depth_centroid,
-            ) = extract_well_data(is_well, inj_rate, src)
-
-            wells = build_wells_table(
-                x_idx,
-                y_idx,
-                depth,
-                inj,
-                perm_x,
-                perm_y,
-                perm_z,
-                porosity,
-                temp0,
-                press0,
-            )
-            vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
-
-        raw_graph = build_single_hetero_data(
-            wells=wells,
-            physics_dict=physics_dict,
-            full_shape=full_shape,
-            target="graph_energy_total",
-            target_val=0.0,
-            vertical_profile=vertical_profiles,
-            case_id=f"inference_custom_geo_{geo_idx}",
+        physics_dict["valid_mask"] = torch.tensor(
+            valid_mask_cropped, dtype=torch.float32
         )
+        full_shape = (z_cutoff, valid_mask.shape[1], valid_mask.shape[2])
 
-        target_graph = scaler.transform_graph(raw_graph)
-        target_graphs.append(target_graph)
-        geology_names.append(geology_path.stem)
+        temp0_full = src["Input/Temperature0"][:]
+        nx = full_shape[1]
+        ny = full_shape[2]
 
-        perm_x_grid = target_graph.physics_context.d["PermX"].cpu().numpy()
-        z_slice = perm_x_grid.shape[0] // 2
-        backgrounds.append(perm_x_grid[z_slice, :, :].T)
+        is_well = np.zeros((z_cutoff, nx, ny), dtype=np.int32)
+        inj_rate = np.zeros((z_cutoff, nx, ny), dtype=np.float32)
 
-    # Collate into a batch with one graph per geology
-    batch = Batch.from_data_list(target_graphs)
-    num_geologies = len(target_graphs)
+        for w in config["wells"]:
+            x, y = w["x"], w["y"]
+            w_type = w.get("type", "injector").lower()
+            if x < 0 or x >= nx or y < 0 or y >= ny:
+                print(
+                    f"Warning: Well at ({x}, {y}) is out of bounds (Grid is {nx}x{ny})"
+                )
+                continue
+
+            well_depth = min(w.get("depth", z_cutoff), z_cutoff)
+
+            for z in range(well_depth):
+                if temp0_full[z, x, y] <= -900:
+                    is_well[z, x, y] = -999
+                    inj_rate[z, x, y] = -999
+                else:
+                    is_well[z, x, y] = 1
+                    if w_type == "injector":
+                        inj_rate[z, x, y] = 8000.0
+                    else:
+                        inj_rate[z, x, y] = -8000.0
+
+        (
+            x_idx,
+            y_idx,
+            depth,
+            inj,
+            perm_x,
+            perm_y,
+            perm_z,
+            porosity,
+            temp0,
+            press0,
+            depth_centroid,
+        ) = extract_well_data(is_well, inj_rate, src)
+
+        wells = build_wells_table(
+            x_idx, y_idx, depth, inj, perm_x, perm_y, perm_z, porosity, temp0, press0
+        )
+        vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
+
+    raw_graph = build_single_hetero_data(
+        wells=wells,
+        physics_dict=physics_dict,
+        full_shape=full_shape,
+        target="graph_energy_total",
+        target_val=0.0,
+        vertical_profile=vertical_profiles,
+        case_id="inference_custom",
+    )
+
+    # Isolate a single case to optimize
+    target_graph = scaler.transform_graph(raw_graph)
+
+    # Collate into a batch of size 1
+    batch = Batch.from_data_list([target_graph])
 
     # 2. Setup Model
     input_dim = batch["well"].x.shape[1]
@@ -287,7 +254,7 @@ def main() -> None:
 
     # 3. Setup Differentiable Parameters
     # Extract the continuous node coordinates
-    coords = target_graphs[0]["well"].pos_xyz.clone().detach().to(device)
+    coords = batch["well"].pos_xyz.clone().detach().to(device)
 
     # CRITICAL: We want to optimize the spatial coordinates
     coords.requires_grad = True
@@ -296,42 +263,36 @@ def main() -> None:
     # (Using Adam to maximize energy)
     optimizer = optim.Adam([coords], lr=args.learning_rate)
 
-    print(
-        f"\n--- Starting Well Placement Optimization across {num_geologies} geologies ---"
-    )
+    print("\n--- Starting Well Placement Optimization ---")
     print(f"Initial coordinates:\n{coords.data}")
 
-    # Shared optimization bounds use the intersection of all geology domains.
-    z_max = min(shape[0] for shape in grid_shapes)
-    nx = min(shape[1] for shape in grid_shapes)
-    ny = min(shape[2] for shape in grid_shapes)
+    # Grid limits from underlying tensor: full_shape is (Z, X, Y)
+    z_max, nx, ny = target_graph.physics_context.full_shape
 
     coords_history = []
-    energy_history_per_geo = []
+    energy_history = []
 
     for step in range(args.optimization_steps):
         coords_history.append(coords.clone().detach().cpu().numpy())
         optimizer.zero_grad()
 
-        # Broadcast one coordinate tensor across all geology graphs.
-        expanded_coords = coords.unsqueeze(0).repeat(num_geologies, 1, 1).view(-1, 3)
-        batch["well"].pos_xyz = expanded_coords
+        # Override the batch coordinates dynamically with our differentiable tensor.
+        # This channels the gradients through grid_sample cleanly into `coords`.
+        batch["well"].pos_xyz = coords
 
         # Forward Pass! -> physics cropper -> 3D CNN -> HeteroGNN
-        predicted_energy = model(batch).view(num_geologies, -1).squeeze(-1)
-        energy_history_per_geo.append(predicted_energy.detach().cpu().numpy())
-        mean_energy = predicted_energy.mean()
+        predicted_energy = model(batch)
+        energy_history.append(predicted_energy.item())
 
-        # We want to MAXIMIZE mean energy across geologies.
-        loss = -mean_energy
+        # We want to MAXIMIZE energy, so we minimize the negative energy
+        loss = -predicted_energy.sum()
 
         # Backward Pass!
         loss.backward()
 
         gradients = coords.grad
         print(
-            f"Original Step {step} Mean Energy: {mean_energy.item():.4f} "
-            f"Max Grad: {gradients.abs().max().item():.4f}"
+            f"Original Step {step} Energy: {predicted_energy.item():.4f} Max Grad: {gradients.abs().max().item():.4f}"
         )
         # print(f"\nOptimization Step {step + 1}/{args.optimization_steps}")
         # print(f"Predicted Energy: {predicted_energy.item():.4f}")
@@ -367,10 +328,8 @@ def main() -> None:
 
     coords_history.append(coords.clone().detach().cpu().numpy())
     with torch.no_grad():
-        expanded_coords = coords.unsqueeze(0).repeat(num_geologies, 1, 1).view(-1, 3)
-        batch["well"].pos_xyz = expanded_coords
-        final_energy = model(batch).view(num_geologies, -1).squeeze(-1)
-        energy_history_per_geo.append(final_energy.detach().cpu().numpy())
+        final_energy = model(batch)
+        energy_history.append(final_energy.item())
 
     print("\n--- Optimization Complete ---")
     print(f"Updated Continuous Coordinates:\n{coords.data}")
@@ -378,19 +337,19 @@ def main() -> None:
     # 4. Decode Outputs and Plot Trajectories (2D with background)
     print("\n--- Generating 2D Trajectory, Energy Plots, and Animation ---")
 
-    energy_matrix = np.stack(energy_history_per_geo, axis=0)  # [steps+1, K]
-    energy_unnorm = scaler.inverse_targets(energy_matrix.reshape(-1, 1)).reshape(
-        energy_matrix.shape
-    )
-    energy_mean_unnorm = energy_unnorm.mean(axis=1)
-    energy_min_all = min(float(energy_unnorm.min()), float(energy_mean_unnorm.min()))
-    energy_max_all = max(float(energy_unnorm.max()), float(energy_mean_unnorm.max()))
-    energy_margin = (energy_max_all - energy_min_all) * 0.12 + 1e-3
+    energy_array = np.array(energy_history).reshape(-1, 1)
+    energy_unnorm = scaler.inverse_targets(energy_array).flatten()
 
     history = np.stack(coords_history, axis=0)  # [steps+1, N_wells, 3]
     num_frames, num_wells, _ = history.shape
 
-    is_injector = target_graphs[0]["well"].is_injector.cpu().numpy()
+    is_injector = batch["well"].is_injector.cpu().numpy()
+    intersect_iterations = np.array([0, 50], dtype=np.float32)
+    intersect_energy = np.array([1.76e14, 2.01e14], dtype=np.float64)
+
+    perm_x_grid = target_graph.physics_context.d["PermX"].cpu().numpy()
+    z_slice = perm_x_grid.shape[0] // 2
+    background = perm_x_grid[z_slice, :, :].T  # Transpose to (Y, X) for imshow
 
     # -------------------------------------------------------------------------
     # Manim-matched colour palette (mirrors scene_cnn_slab_still.py)
@@ -409,11 +368,6 @@ def main() -> None:
     TICK_SIZE = 16
     LEGEND_SIZE = 16
     CBAR_LABEL_SIZE = 16
-
-    # Increase export resolution without changing original layout proportions.
-    PNG_DPI = 220
-    GIF_DPI = 140
-    PLOT_WSPACE = 0.12
 
     plt.rcParams.update(
         {
@@ -453,16 +407,27 @@ def main() -> None:
     # -------------------------------------------------------------------------
     fig, axes = plt.subplots(
         1,
-        num_geologies + 1,
-        figsize=(10 * (num_geologies + 1), 8),
-        gridspec_kw={"width_ratios": [1.2] * num_geologies + [1.5], "wspace": PLOT_WSPACE},
+        2,
+        figsize=(22, 8),
+        gridspec_kw={"width_ratios": [1.2, 1]},
         facecolor=MANIM_BG,
     )
-    ax_maps = axes[:num_geologies]
-    ax_energy = axes[-1]
-    for ax_map in ax_maps:
-        _style_ax(ax_map)
+    ax_map = axes[0]
+    ax_energy = axes[1]
+    _style_ax(ax_map)
     _style_ax(ax_energy)
+
+    im = ax_map.imshow(
+        background,
+        origin="lower",
+        cmap="viridis",
+        alpha=0.55,
+        extent=[0, perm_x_grid.shape[1], 0, perm_x_grid.shape[2]],
+    )
+    cbar = plt.colorbar(im, ax=ax_map)
+    cbar.ax.tick_params(labelsize=TICK_SIZE, colors=MANIM_WHITE)
+    cbar.set_label("Normalized Log PermX", fontsize=CBAR_LABEL_SIZE, color=MANIM_WHITE)
+    cbar.outline.set_edgecolor(MANIM_WHITE)
 
     added_inj_trail = False
     added_prod_trail = False
@@ -479,97 +444,75 @@ def main() -> None:
             trail_label = "Producer"
             added_prod_trail = True
 
+        ax_map.plot(
+            history[:, w, 0],
+            history[:, w, 1],
+            color=color,
+            alpha=0.7,
+            linestyle="-",
+            linewidth=2,
+            label=trail_label,
+        )
+        # Start marker (circle)
+        ax_map.scatter(
+            history[0, w, 0],
+            history[0, w, 1],
+            color=color,
+            marker="o",
+            s=80,
+            edgecolors=MANIM_WHITE,
+            linewidths=1.2,
+            zorder=5,
+        )
+        # End marker (triangle)
         marker_end = "^" if is_inj else "v"
-        for k, ax_map in enumerate(ax_maps):
-            bg = backgrounds[k]
-            if w == 0:
-                im = ax_map.imshow(
-                    bg,
-                    origin="lower",
-                    cmap="viridis",
-                    alpha=0.55,
-                    extent=[0, bg.shape[1], 0, bg.shape[0]],
-                )
-                cbar = plt.colorbar(im, ax=ax_map, pad=0.015)
-                cbar.ax.tick_params(labelsize=TICK_SIZE, colors=MANIM_WHITE)
-                if k == 0:
-                    cbar.set_label(
-                        "Normalized Log PermX",
-                        fontsize=CBAR_LABEL_SIZE,
-                        color=MANIM_WHITE,
-                    )
-                cbar.outline.set_edgecolor(MANIM_WHITE)
-
-            ax_map.plot(
-                history[:, w, 0],
-                history[:, w, 1],
-                color=color,
-                alpha=0.7,
-                linestyle="-",
-                linewidth=2,
-                label=trail_label if k == 0 else None,
-            )
-            # Start marker (circle)
-            ax_map.scatter(
-                history[0, w, 0],
-                history[0, w, 1],
-                color=color,
-                marker="o",
-                s=80,
-                edgecolors=MANIM_WHITE,
-                linewidths=1.2,
-                zorder=5,
-            )
-            # End marker (triangle)
-            ax_map.scatter(
-                history[-1, w, 0],
-                history[-1, w, 1],
-                color=color,
-                marker=marker_end,
-                s=200,
-                edgecolors=MANIM_WHITE,
-                linewidths=1.2,
-                zorder=6,
-            )
-
-    for k, ax_map in enumerate(ax_maps):
-        z_slice = grid_shapes[k][0] // 2
-        ax_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
-        ax_map.set_ylabel(
-            "Y Coordinate" if k == 0 else "", fontsize=FONT_SIZE, color=MANIM_WHITE
+        ax_map.scatter(
+            history[-1, w, 0],
+            history[-1, w, 1],
+            color=color,
+            marker=marker_end,
+            s=200,
+            edgecolors=MANIM_WHITE,
+            linewidths=1.2,
+            zorder=6,
         )
-        ax_map.set_title(
-            f"{geology_names[k]}\n{args.optimization_steps} Steps (Z={z_slice})",
-            fontsize=TITLE_SIZE,
-            color=MANIM_WHITE,
-        )
-    ax_maps[0].legend(
+
+    ax_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
+    ax_map.set_ylabel("Y Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
+    ax_map.set_title(
+        f"Well Optimization — {args.optimization_steps} Steps\n"
+        f"Background: Normalized Log PermX (Z={z_slice})",
+        fontsize=TITLE_SIZE,
+        color=MANIM_WHITE,
+    )
+    ax_map.legend(
         fontsize=LEGEND_SIZE,
         facecolor="#111111",
         edgecolor=MANIM_GREY,
         labelcolor=MANIM_WHITE,
     )
 
-    for k in range(num_geologies):
-        ax_energy.plot(
-            range(len(energy_unnorm)),
-            energy_unnorm[:, k],
-            linewidth=1.5,
-            alpha=0.45,
-            color=MANIM_GREY,
-            label=("Per-geology energy" if k == 0 else None),
-        )
     ax_energy.plot(
-        range(len(energy_mean_unnorm)),
-        energy_mean_unnorm,
+        range(len(energy_unnorm)),
+        energy_unnorm,
         marker="o",
-        linewidth=2.8,
+        linewidth=2,
         color=MANIM_BLUE,
         markerfacecolor=MANIM_ORANGE,
         markeredgecolor=MANIM_WHITE,
         markeredgewidth=1.0,
         markersize=7,
-        label="Mean energy",
+    )
+    ax_energy.scatter(
+        intersect_iterations,
+        intersect_energy,
+        marker="*",
+        s=280,
+        color="#FF2A2A",
+        edgecolors=MANIM_WHITE,
+        linewidths=1.4,
+        label="Intersect",
+        zorder=8,
     )
     ax_energy.set_xlabel(
         "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
@@ -578,28 +521,27 @@ def main() -> None:
         "Total Energy Production (Non-Normalized)",
         fontsize=FONT_SIZE,
         color=MANIM_WHITE,
-        labelpad=2,
     )
     ax_energy.set_title(
-        "Predicted Energy Growth (Mean over Geologies)",
+        "Predicted Energy Growth over Differentiable Steps",
         fontsize=TITLE_SIZE,
         color=MANIM_WHITE,
     )
-    ax_energy.set_ylim(energy_min_all - energy_margin, energy_max_all + energy_margin)
     ax_energy.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
     ax_energy.legend(
         fontsize=LEGEND_SIZE,
         facecolor="#111111",
         edgecolor=MANIM_GREY,
         labelcolor=MANIM_WHITE,
+        loc="best",
     )
 
-    fig.tight_layout(w_pad=1.2)
+    plt.tight_layout()
 
     os.makedirs("plots", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     plot_path = f"plots/well_trajectories_2D_Energy_{timestamp}.png"
-    plt.savefig(plot_path, dpi=PNG_DPI, bbox_inches="tight", facecolor=MANIM_BG)
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig)
     print(f"Saved 2D trajectory & energy plot to {plot_path}")
 
@@ -610,51 +552,39 @@ def main() -> None:
     from PIL import Image
 
     GIF_FPS = 20
+    GIF_DPI = 100
 
     print(f"Building {num_frames} animation frames (PIL fast-path, {GIF_FPS} fps)...")
 
-    # Use per-geology extents for subplot backgrounds.
-    map_extents = [(0, bg.shape[1], 0, bg.shape[0]) for bg in backgrounds]
+    # Use the same full-grid extents as the static PNG so proportions match
+    grid_xlim = (0, perm_x_grid.shape[1])
+    grid_ylim = (0, perm_x_grid.shape[2])
 
     # Build the figure once; reuse it every frame (Agg backend renders to buffer)
     fig_anim, axes_anim = plt.subplots(
         1,
-        num_geologies + 1,
-        figsize=(10 * (num_geologies + 1), 8),
-        gridspec_kw={"width_ratios": [1.2] * num_geologies + [1.5], "wspace": PLOT_WSPACE},
+        2,
+        figsize=(22, 8),  # identical size to static PNG
+        gridspec_kw={"width_ratios": [1.2, 1]},  # identical ratios to static PNG
         facecolor=MANIM_BG,
     )
-    ax_anim_maps = axes_anim[:num_geologies]
-    ax_anim_en = axes_anim[-1]
-    for ax_anim_map in ax_anim_maps:
-        _style_ax(ax_anim_map)
+    ax_anim_map = axes_anim[0]
+    ax_anim_en = axes_anim[1]
+    _style_ax(ax_anim_map)
     _style_ax(ax_anim_en)
 
-    # Static permeability backgrounds — drawn once for each geology map.
-    for k, ax_anim_map in enumerate(ax_anim_maps):
-        bg = backgrounds[k]
-        x0, x1, y0, y1 = map_extents[k]
-        ax_anim_map.imshow(
-            bg,
-            origin="lower",
-            cmap="viridis",
-            alpha=0.55,
-            extent=[x0, x1, y0, y1],
-        )
-        ax_anim_map.set_xlim(x0, x1)
-        ax_anim_map.set_ylim(y0, y1)
-        ax_anim_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
-        ax_anim_map.set_ylabel(
-            "Y Coordinate" if k == 0 else "",
-            fontsize=FONT_SIZE,
-            color=MANIM_WHITE,
-        )
-        z_slice = grid_shapes[k][0] // 2
-        ax_anim_map.set_title(
-            f"{geology_names[k]} (Z={z_slice})",
-            fontsize=TITLE_SIZE,
-            color=MANIM_WHITE,
-        )
+    # Static permeability background — drawn once, never redrawn
+    ax_anim_map.imshow(
+        background,
+        origin="lower",
+        cmap="viridis",
+        alpha=0.55,
+        extent=[grid_xlim[0], grid_xlim[1], grid_ylim[0], grid_ylim[1]],
+    )
+    ax_anim_map.set_xlim(*grid_xlim)
+    ax_anim_map.set_ylim(*grid_ylim)
+    ax_anim_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
+    ax_anim_map.set_ylabel("Y Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
 
     ax_anim_en.set_xlabel(
         "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
@@ -663,54 +593,51 @@ def main() -> None:
         "Total Energy Production\n(Non-Normalized)",
         fontsize=FONT_SIZE,
         color=MANIM_WHITE,
-        labelpad=2,
     )
-    ax_anim_en.set_xlim(-0.5, len(energy_mean_unnorm) - 0.5)
+    ax_anim_en.set_xlim(-0.5, len(energy_unnorm) - 0.5)
+    energy_with_intersect = np.concatenate([energy_unnorm, intersect_energy])
+    en_margin = (energy_with_intersect.max() - energy_with_intersect.min()) * 0.12 + 1e-3
     ax_anim_en.set_ylim(
-        energy_min_all - energy_margin, energy_max_all + energy_margin
+        energy_with_intersect.min() - en_margin,
+        energy_with_intersect.max() + en_margin,
     )
     ax_anim_en.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
 
     # Pre-create all mutable artists (updated via set_data each frame)
-    map_trail_lines = []
-    map_dot_artists = []
-    for k, ax_anim_map in enumerate(ax_anim_maps):
-        trail_lines, dot_artists = [], []
-        seen_labels: set[str] = set()
-        for w in range(num_wells):
-            is_inj = is_injector[w] > 0.5
-            color = MANIM_BLUE if is_inj else MANIM_ORANGE
-            label_str = "Injector" if is_inj else "Producer"
-            leg_label = label_str if (k == 0 and label_str not in seen_labels) else None
-            if leg_label:
-                seen_labels.add(label_str)
+    trail_lines, dot_artists, label_texts = [], [], []
+    seen_labels: set[str] = set()
+    for w in range(num_wells):
+        is_inj = is_injector[w] > 0.5
+        color = MANIM_BLUE if is_inj else MANIM_ORANGE
+        label_str = "Injector" if is_inj else "Producer"
+        leg_label = label_str if label_str not in seen_labels else None
+        if leg_label:
+            seen_labels.add(label_str)
 
-            (trail,) = ax_anim_map.plot(
-                [],
-                [],
-                color=color,
-                alpha=0.8,
-                linewidth=2,
-                solid_capstyle="round",
-                label=leg_label,
-            )
-            (dot,) = ax_anim_map.plot(
-                [],
-                [],
-                marker="o",
-                color=color,
-                markersize=10,
-                markeredgecolor=MANIM_WHITE,
-                markeredgewidth=1.5,
-                linestyle="None",
-                zorder=7,
-            )
-            trail_lines.append(trail)
-            dot_artists.append(dot)
-        map_trail_lines.append(trail_lines)
-        map_dot_artists.append(dot_artists)
+        (trail,) = ax_anim_map.plot(
+            [],
+            [],
+            color=color,
+            alpha=0.8,
+            linewidth=2,
+            solid_capstyle="round",
+            label=leg_label,
+        )
+        (dot,) = ax_anim_map.plot(
+            [],
+            [],
+            marker="o",
+            color=color,
+            markersize=10,
+            markeredgecolor=MANIM_WHITE,
+            markeredgewidth=1.5,
+            linestyle="None",
+            zorder=7,
+        )
+        trail_lines.append(trail)
+        dot_artists.append(dot)
 
-    ax_anim_maps[0].legend(
+    ax_anim_map.legend(
         fontsize=LEGEND_SIZE,
         facecolor="#111111",
         edgecolor=MANIM_GREY,
@@ -718,29 +645,16 @@ def main() -> None:
         loc="upper right",
     )
 
-    geo_energy_lines = []
-    for k in range(num_geologies):
-        (geo_line,) = ax_anim_en.plot(
-            [],
-            [],
-            color=MANIM_GREY,
-            alpha=0.45,
-            linewidth=1.5,
-            label=("Per-geology energy" if k == 0 else None),
-        )
-        geo_energy_lines.append(geo_line)
-
-    (mean_en_line,) = ax_anim_en.plot(
+    (en_line,) = ax_anim_en.plot(
         [],
         [],
         color=MANIM_BLUE,
-        linewidth=2.4,
+        linewidth=2,
         marker="o",
         markersize=5,
         markerfacecolor=MANIM_ORANGE,
         markeredgecolor=MANIM_WHITE,
         markeredgewidth=1.0,
-        label="Mean energy",
     )
     en_dot = ax_anim_en.scatter(
         [],
@@ -751,20 +665,30 @@ def main() -> None:
         linewidths=1.5,
         zorder=7,
     )
-    title_obj = fig_anim.suptitle("", fontsize=TITLE_SIZE, color=MANIM_WHITE)
+    ax_anim_en.scatter(
+        intersect_iterations,
+        intersect_energy,
+        marker="*",
+        s=220,
+        color="#FF2A2A",
+        edgecolors=MANIM_WHITE,
+        linewidths=1.4,
+        label="Intersect",
+        zorder=6,
+    )
+    title_obj = ax_anim_map.set_title("", fontsize=TITLE_SIZE, color=MANIM_WHITE)
     ax_anim_en.set_title(
-        "Predicted Energy Growth (Mean over Geologies)",
-        fontsize=TITLE_SIZE,
-        color=MANIM_WHITE,
+        "Predicted Energy Growth", fontsize=TITLE_SIZE, color=MANIM_WHITE
     )
     ax_anim_en.legend(
         fontsize=LEGEND_SIZE,
         facecolor="#111111",
         edgecolor=MANIM_GREY,
         labelcolor=MANIM_WHITE,
+        loc="best",
     )
 
-    fig_anim.tight_layout(w_pad=1.2)
+    plt.tight_layout()
 
     # ------------------------------------------------------------------
     # Fast manual render loop: draw each frame → Agg buffer → PIL Image
@@ -774,26 +698,21 @@ def main() -> None:
     canvas.draw()  # initial draw to populate the renderer
 
     for frame in range(num_frames):
-        # Update trail + dot per well for every geology map.
+        # Update trail + dot per well
         for w in range(num_wells):
             xs = history[: frame + 1, w, 0]
             ys = history[: frame + 1, w, 1]
-            for k in range(num_geologies):
-                map_trail_lines[k][w].set_data(xs, ys)
-                map_dot_artists[k][w].set_data([xs[-1]], [ys[-1]])
+            trail_lines[w].set_data(xs, ys)
+            dot_artists[w].set_data([xs[-1]], [ys[-1]])
 
         # Energy panel
-        en_frame = min(frame, len(energy_mean_unnorm) - 1)
-        for k in range(num_geologies):
-            geo_energy_lines[k].set_data(
-                range(en_frame + 1), energy_unnorm[: en_frame + 1, k]
-            )
-        mean_en_line.set_data(range(en_frame + 1), energy_mean_unnorm[: en_frame + 1])
-        en_dot.set_offsets([[en_frame, energy_mean_unnorm[en_frame]]])
+        en_frame = min(frame, len(energy_unnorm) - 1)
+        en_line.set_data(range(en_frame + 1), energy_unnorm[: en_frame + 1])
+        en_dot.set_offsets([[en_frame, energy_unnorm[en_frame]]])
 
         title_obj.set_text(
-            f"Well Placement Optimization — Step {frame} / {num_frames - 1} "
-            f"across {num_geologies} geologies"
+            f"Well Placement Optimization — Step {frame} / {num_frames - 1}\n"
+            f"Background: Normalized Log PermX (Z={z_slice})"
         )
 
         # Render to in-memory PNG buffer via Agg, then open with PIL

@@ -828,8 +828,9 @@ def main() -> None:
 
     history = np.stack(coords_history, axis=0)  # [steps+1, N_wells, 3]
     num_frames, num_wells, _ = history.shape
+    removal_depth_threshold = 1.0
     final_depths = history[-1, :, 2]
-    zero_depth_mask = np.isclose(final_depths, 0.0, atol=1e-6)
+    removed_well_mask = final_depths < removal_depth_threshold
 
     is_injector = batch["well"].is_injector.cpu().numpy()
 
@@ -917,7 +918,7 @@ def main() -> None:
 
     added_inj_trail = False
     added_prod_trail = False
-    added_zero_depth_label = False
+    added_removed_label = False
 
     for w in range(num_wells):
         is_inj = is_injector[w] > 0.5
@@ -964,12 +965,12 @@ def main() -> None:
             zorder=6,
         )
 
-        # Cross out wells that converged to zero depth (z ~= 0).
-        if zero_depth_mask[w]:
-            zero_depth_label = None
-            if not added_zero_depth_label:
-                zero_depth_label = "Zero-depth well"
-                added_zero_depth_label = True
+        # Cross out wells that end up effectively removed by shallow depth.
+        if removed_well_mask[w]:
+            removed_label = None
+            if not added_removed_label:
+                removed_label = f"Removed well (depth < {removal_depth_threshold:g})"
+                added_removed_label = True
 
             ax_map.scatter(
                 history[-1, w, 0],
@@ -979,7 +980,7 @@ def main() -> None:
                 s=260,
                 linewidths=2.6,
                 zorder=8,
-                label=zero_depth_label,
+                label=removed_label,
             )
 
     ax_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
@@ -1031,9 +1032,12 @@ def main() -> None:
     plt.savefig(plot_path, dpi=300, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig)
     print(f"Saved 2D trajectory & NPV plot to {plot_path}")
-    if np.any(zero_depth_mask):
-        zero_depth_ids = np.where(zero_depth_mask)[0].tolist()
-        print(f"Crossed out zero-depth wells on final plot: indices={zero_depth_ids}")
+    if np.any(removed_well_mask):
+        removed_ids = np.where(removed_well_mask)[0].tolist()
+        print(
+            "Crossed out shallow wells on final plot "
+            f"(depth < {removal_depth_threshold:g}): indices={removed_ids}"
+        )
     print(
         "Final objective breakdown: "
         f"NPV={objective_unnorm[-1]:.4f}, "
@@ -1101,8 +1105,9 @@ def main() -> None:
     ax_anim_en.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
 
     # Pre-create all mutable artists (updated via set_data each frame)
-    trail_lines, dot_artists, label_texts = [], [], []
+    trail_lines, dot_artists, removed_artists = [], [], []
     seen_labels: set[str] = set()
+    added_removed_legend = False
     for w in range(num_wells):
         is_inj = is_injector[w] > 0.5
         color = MANIM_BLUE if is_inj else MANIM_ORANGE
@@ -1131,8 +1136,24 @@ def main() -> None:
             linestyle="None",
             zorder=7,
         )
+        removed_label = None
+        if not added_removed_legend:
+            removed_label = f"Removed well (depth < {removal_depth_threshold:g})"
+            added_removed_legend = True
+        (removed_cross,) = ax_anim_map.plot(
+            [],
+            [],
+            marker="x",
+            color=MANIM_WHITE,
+            markersize=13,
+            markeredgewidth=2.4,
+            linestyle="None",
+            zorder=8,
+            label=removed_label,
+        )
         trail_lines.append(trail)
         dot_artists.append(dot)
+        removed_artists.append(removed_cross)
 
     ax_anim_map.legend(
         fontsize=LEGEND_SIZE,
@@ -1183,6 +1204,13 @@ def main() -> None:
             ys = history[: frame + 1, w, 1]
             trail_lines[w].set_data(xs, ys)
             dot_artists[w].set_data([xs[-1]], [ys[-1]])
+
+            # Once a well ever gets shallow enough, mark it as effectively removed.
+            removed_now = np.any(history[: frame + 1, w, 2] < removal_depth_threshold)
+            if removed_now:
+                removed_artists[w].set_data([xs[-1]], [ys[-1]])
+            else:
+                removed_artists[w].set_data([], [])
 
         # Energy panel
         en_frame = min(frame, len(objective_unnorm) - 1)
