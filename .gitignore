@@ -6,4 +6,4 @@ visualization/media
 visualization/logs
 /*.h5
 plots
-data_analysis/smallerModel.jld2
+analysis/smallerModel.jld2
