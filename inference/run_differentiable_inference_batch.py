@@ -20,8 +20,14 @@ import time
 import logging
 from pathlib import Path
 import os
+import sys
 import pickle
 from datetime import datetime
+
+# Ensure repo-root modules are importable when running as `python inference/...`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import h5py
 import torch

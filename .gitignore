@@ -7,3 +7,4 @@ visualization/logs
 /*.h5
 plots
 analysis/smallerModel.jld2
+inference/inference_outputs

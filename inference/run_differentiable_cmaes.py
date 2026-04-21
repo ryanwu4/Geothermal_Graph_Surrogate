@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Differentiable Inference Wrapper for Well Location Optimization (LHS Batch Geologies)
+Differentiable Inference Wrapper for Well Location Optimization (CMA-ES Batch Geologies)
 
 This script loads a trained HeteroGNNRegressor model and multiple
 geothermal case graphs. It generates N initial well coordinate sets via Latin Hypercube
@@ -8,7 +8,12 @@ Sampling natively across the continuous space, bounded by a specified edge buffe
 
 The optimization process evaluates combinations iteratively across compute chunks (size M),
 running parallel optimization of the contiguous well coordinates simultaneously
-across ALL candidate geologies to find a robust mean energy yield under variance bounds.
+across ALL candidate geologies to find a robust mean discounted revenue yield.
+
+For active-learning handoff, the script periodically logs candidate well arrangements
+as JSON snapshots, exports per-snapshot Intersect-compatible Julia well configs,
+and renders per-snapshot figures that include surrogate-estimated targets over all
+geologies in the optimization batch.
 """
 
 from __future__ import annotations
@@ -17,17 +22,23 @@ import argparse
 import json
 import csv
 import time
-import logging
 from pathlib import Path
-import os
+import sys
 import pickle
 from datetime import datetime
+from typing import Any
+
+# Ensure repo-root modules are importable when running as `python inference/...`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import h5py
 import torch
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
 from torch_geometric.data import Batch
 import optuna
 from optuna.samplers import CmaEsSampler
@@ -41,6 +52,236 @@ from compile_minimal_geothermal_h5 import (
 from preprocess_h5 import get_valid_mask, find_z_cutoff, PROPERTIES, PERM_PROPS
 from geothermal.data import HeteroGraphScaler, build_single_hetero_data
 from geothermal.model import HeteroGNNRegressor
+
+
+def _load_scaler(path: Path, label: str):
+    if not path.exists():
+        raise FileNotFoundError(f"{label} scaler not found at {path}")
+    with open(path, "rb") as f:
+        scaler = pickle.load(f)
+    tqdm.write(f"Loaded {label} scaler from {path}")
+    return scaler
+
+
+def _load_model(path: Path, device: torch.device, label: str) -> HeteroGNNRegressor:
+    if not path.exists():
+        raise FileNotFoundError(f"{label} checkpoint not found at {path}")
+    model = HeteroGNNRegressor.load_from_checkpoint(str(path), map_location=device)
+    model = model.to(device)
+    model.eval()
+    tqdm.write(f"Loaded {label} model checkpoint from {path}")
+    return model
+
+
+def _inverse_targets_1d(scaler, values_scaled_1d: np.ndarray) -> np.ndarray:
+    flat = values_scaled_1d.reshape(-1, 1)
+    return scaler.inverse_targets(flat).reshape(-1)
+
+
+def _decode_h5_scalar(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, np.bytes_):
+        return value.astype(str)
+    if isinstance(value, np.ndarray):
+        if value.shape == ():
+            return _decode_h5_scalar(value.item())
+        if value.size == 1:
+            return _decode_h5_scalar(value.reshape(-1)[0])
+        return [
+            _decode_h5_scalar(v) for v in value.tolist()
+        ]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _read_geology_metadata(src: h5py.File, geology_name: str) -> dict[str, Any]:
+    metadata_group = None
+    if "Metadata" in src:
+        metadata_group = src["Metadata"]
+    elif "metadata" in src:
+        metadata_group = src["metadata"]
+
+    def _read_key(key: str) -> Any:
+        if metadata_group is None or key not in metadata_group:
+            return None
+        return _decode_h5_scalar(metadata_group[key][()])
+
+    rep_num = _read_key("RepNum")
+    scenario_name = _read_key("ScenarioName")
+    sample_num = _read_key("SampleNum")
+    data_format_version = _read_key("DataFormatVersion")
+    model_version = _read_key("ModelVersion")
+    geology_config_id = rep_num if rep_num not in [None, ""] else scenario_name
+
+    return {
+        "geology_name": geology_name,
+        "geology_config_id": geology_config_id,
+        "rep_num": rep_num,
+        "scenario_name": scenario_name,
+        "sample_num": sample_num,
+        "data_format_version": data_format_version,
+        "model_version": model_version,
+    }
+
+
+def _jl_quote(value: Any) -> str:
+    s = "" if value is None else str(value)
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{s}"'
+
+
+def _sanitize_id_token(value: Any) -> str:
+    text = "unknown" if value is None else str(value)
+    out = []
+    for c in text:
+        if c.isalnum() or c in ["_", "-"]:
+            out.append(c)
+        else:
+            out.append("_")
+    token = "".join(out).strip("_")
+    return token if token else "unknown"
+
+
+def _to_julia_wells_text(
+    coords_xyz: np.ndarray,
+    is_injector_list: list[bool],
+    score: float,
+    score_label: str,
+    geology_revenue: list[float] | None = None,
+    geology_energy: list[float] | None = None,
+    geology_file: str | None = None,
+    geology_name: str | None = None,
+    geology_config_id: Any = None,
+    geology_scenario_name: Any = None,
+    geology_sample_num: Any = None,
+    predicted_discounted_revenue: float | None = None,
+    predicted_total_energy: float | None = None,
+) -> str:
+    lines = []
+    lines.append("# Auto-generated by Differentiable Inference Proxy")
+    lines.append(f"# {score_label}: {score:.6f}")
+    if geology_revenue is not None:
+        lines.append(
+            "# Per-geology discounted revenue: "
+            + ", ".join(f"{v:.6f}" for v in geology_revenue)
+        )
+    if geology_energy is not None:
+        lines.append(
+            "# Per-geology total energy: "
+            + ", ".join(f"{v:.6f}" for v in geology_energy)
+        )
+    if geology_file is not None:
+        lines.append(f"# Geology file: {geology_file}")
+    if geology_name is not None:
+        lines.append(f"# Geology name: {geology_name}")
+    if geology_config_id is not None:
+        lines.append(f"# Geology config ID (Metadata/RepNum): {geology_config_id}")
+    if geology_scenario_name is not None:
+        lines.append(f"# Geology scenario name (Metadata/ScenarioName): {geology_scenario_name}")
+    if geology_sample_num is not None:
+        lines.append(f"# Geology sample number (Metadata/SampleNum): {geology_sample_num}")
+    if predicted_discounted_revenue is not None:
+        lines.append(
+            f"# Predicted discounted revenue for this geology: {predicted_discounted_revenue:.6f}"
+        )
+    if predicted_total_energy is not None:
+        lines.append(
+            f"# Predicted total energy for this geology: {predicted_total_energy:.6f}"
+        )
+
+    if geology_config_id is not None:
+        lines.append(f"geology_config_id = {_jl_quote(geology_config_id)}")
+    if geology_scenario_name is not None:
+        lines.append(f"geology_scenario_name = {_jl_quote(geology_scenario_name)}")
+    if geology_file is not None:
+        lines.append(f"geology_source_file = {_jl_quote(geology_file)}")
+    if geology_name is not None:
+        lines.append(f"geology_source_name = {_jl_quote(geology_name)}")
+
+    lines.append("wells = [")
+    for w, (x, y, z) in enumerate(coords_xyz):
+        # Map continuous [X, Y, Z] to 1-based [I, J, K].
+        # This mirrors the base differentiable inference export convention.
+        j_idx = int(round(float(x))) + 1
+        i_idx = int(round(float(y))) + 1
+        k_idx = int(round(float(z))) + 1
+
+        is_inj = is_injector_list[w]
+        well_type = '"INJECTOR"' if is_inj else '"PRODUCER"'
+        rate = 8000.0 if is_inj else -8000.0
+        lines.append(f"    ({i_idx}, {j_idx}, {k_idx}, {well_type}, {rate}),")
+    lines.append("]")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_snapshot_payload(
+    run_id: int,
+    iteration: int,
+    is_final_iteration: bool,
+    coords_xyz: np.ndarray,
+    is_injector_list: list[bool],
+    geology_files: list[str],
+    geology_names: list[str],
+    geology_metadata: list[dict[str, Any]],
+    revenue_by_geo: np.ndarray,
+    energy_by_geo: np.ndarray,
+) -> dict[str, Any]:
+    wells_json = []
+    for w, (x, y, z) in enumerate(coords_xyz):
+        is_inj = is_injector_list[w]
+        j_idx = int(round(float(x))) + 1
+        i_idx = int(round(float(y))) + 1
+        k_idx = int(round(float(z))) + 1
+        wells_json.append(
+            {
+                "well_id": int(w),
+                "type": "injector" if is_inj else "producer",
+                "x": float(x),
+                "y": float(y),
+                "z": float(z),
+                "i_idx": int(i_idx),
+                "j_idx": int(j_idx),
+                "k_idx": int(k_idx),
+                "rate": float(8000.0 if is_inj else -8000.0),
+            }
+        )
+
+    geology_predictions = []
+    for k, geo in enumerate(geology_files):
+        geo_meta = geology_metadata[k] if k < len(geology_metadata) else {}
+        geology_predictions.append(
+            {
+                "geology_index": int(k),
+                "geology_file": str(geo),
+                "geology_name": geology_names[k],
+                "geology_config_id": geo_meta.get("geology_config_id"),
+                "geology_rep_num": geo_meta.get("rep_num"),
+                "geology_scenario_name": geo_meta.get("scenario_name"),
+                "geology_sample_num": geo_meta.get("sample_num"),
+                "geology_data_format_version": geo_meta.get("data_format_version"),
+                "geology_model_version": geo_meta.get("model_version"),
+                "discounted_total_revenue": float(revenue_by_geo[k]),
+                "total_energy_production": float(energy_by_geo[k]),
+            }
+        )
+
+    payload = {
+        "snapshot_id": f"run{run_id:04d}_iter{iteration:04d}",
+        "run_id": int(run_id),
+        "iteration": int(iteration),
+        "is_final_iteration": bool(is_final_iteration),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "wells": wells_json,
+        "predictions_by_geology": geology_predictions,
+        "summary": {
+            "mean_discounted_total_revenue": float(np.mean(revenue_by_geo)),
+            "mean_total_energy_production": float(np.mean(energy_by_geo)),
+        },
+    }
+    return payload
 
 
 def main() -> None:
@@ -71,31 +312,65 @@ def main() -> None:
         help="GPU device index to use (default: 0). Pass -1 to force CPU.",
     )
     parser.add_argument(
-        "--export-jl",
+        "--output-dir",
         type=str,
         default="",
-        help="Path to export the optimized well placement in Julia configuration format.",
+        help="Override root output directory for active-learning artifacts.",
     )
     args = parser.parse_args()
 
     # 1. Load Configurations & Device Setting
-    with open(args.config, "r") as f:
+    config_path = Path(args.config).resolve()
+    config_dir = config_path.parent
+
+    def _resolve_config_path(value: str) -> Path:
+        p = Path(value)
+        return p if p.is_absolute() else (config_dir / p)
+
+    with open(config_path, "r") as f:
         config = json.load(f)
 
-    checkpoint_path = Path(config.get("checkpoint"))
-    if not checkpoint_path:
-        raise ValueError("Missing 'checkpoint' path in JSON configuration")
-    scaler_path = Path(config.get("scaler_path"))
-    if not scaler_path:
-        raise ValueError("Missing 'scaler_path' in JSON configuration")
+    revenue_checkpoint_raw = config.get(
+        "revenue_checkpoint", config.get("checkpoint", "")
+    )
+    if not revenue_checkpoint_raw:
+        raise ValueError("Missing 'revenue_checkpoint' (or legacy 'checkpoint')")
+    revenue_checkpoint_path = _resolve_config_path(str(revenue_checkpoint_raw))
+
+    revenue_scaler_raw = config.get(
+        "revenue_scaler_path", config.get("scaler_path", "")
+    )
+    if not revenue_scaler_raw:
+        raise ValueError("Missing 'revenue_scaler_path' (or legacy 'scaler_path')")
+    revenue_scaler_path = _resolve_config_path(str(revenue_scaler_raw))
+
+    energy_checkpoint_raw = config.get(
+        "energy_checkpoint", config.get("checkpoint", "")
+    )
+    if not energy_checkpoint_raw:
+        raise ValueError("Missing 'energy_checkpoint' (or legacy 'checkpoint')")
+    energy_checkpoint_path = _resolve_config_path(str(energy_checkpoint_raw))
+
+    energy_scaler_raw = config.get(
+        "energy_scaler_path", config.get("scaler_path", "")
+    )
+    if not energy_scaler_raw:
+        raise ValueError("Missing 'energy_scaler_path' (or legacy 'scaler_path')")
+    energy_scaler_path = _resolve_config_path(str(energy_scaler_raw))
+
+    revenue_target = config.get("revenue_target", "graph_discounted_net_revenue")
+    energy_target = config.get("energy_target", "graph_energy_total")
 
     geology_files = config.get("geology_h5_files", [config.get("geology_h5_file")])
     if not geology_files or geology_files[0] is None:
         raise ValueError(
             "Missing 'geology_h5_files' or 'geology_h5_file' in configuration"
         )
+    geology_files = [str(_resolve_config_path(str(g))) for g in geology_files]
 
-    norm_config_path = Path(config.get("norm_config", "norm_config.json"))
+    norm_config_path = _resolve_config_path(
+        config.get("norm_config", "norm_config.json")
+    )
     if not norm_config_path.exists():
         raise FileNotFoundError(f"Norm config not found: {norm_config_path}")
 
@@ -105,6 +380,9 @@ def main() -> None:
     num_samples_N = config.get("num_samples_N", 30)
     batch_size_M = config.get("batch_size_M", 10)
     edge_buffer = config.get("edge_buffer", 5)
+    num_log_iter = int(config.get("num_log_iter", 5))
+    if num_log_iter <= 0:
+        raise ValueError("'num_log_iter' must be >= 1")
 
     if args.gpu >= 0 and torch.cuda.is_available():
         if args.gpu >= torch.cuda.device_count():
@@ -116,36 +394,49 @@ def main() -> None:
         device = torch.device(f"cuda:{args.gpu}")
     else:
         device = torch.device("cpu")
-    print(f"Using device: {device}")
+    tqdm.write(f"Using device: {device}")
 
-    scaler = None
-    if scaler_path.exists():
-        with open(scaler_path, "rb") as f:
-            scaler = pickle.load(f)
-        print(f"Loaded training scaler from {scaler_path}")
-    else:
-        raise FileNotFoundError(f"Scaler not found at {scaler_path}")
+    revenue_scaler = _load_scaler(revenue_scaler_path, "revenue")
+    energy_scaler = _load_scaler(energy_scaler_path, "energy")
 
-    if checkpoint_path.exists():
-        model = HeteroGNNRegressor.load_from_checkpoint(
-            str(checkpoint_path), map_location=device
-        )
-        print(f"Loaded trained model checkpoint from {checkpoint_path}.")
-    else:
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+    revenue_model = _load_model(revenue_checkpoint_path, device, "revenue")
+    energy_model = _load_model(energy_checkpoint_path, device, "energy")
 
-    model = model.to(device)
-    model.eval()
+    output_root = (
+        Path(args.output_dir)
+        if args.output_dir
+        else Path(config.get("output_root", "inference_outputs/cmaes_active_learning"))
+    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_output_dir = output_root / f"cmaes_{timestamp}"
+    snapshots_json_dir = run_output_dir / "snapshots_json"
+    snapshots_fig_dir = run_output_dir / "snapshots_figures"
+    snapshot_well_configs_dir = run_output_dir / "well_configs"
+    summary_plots_dir = run_output_dir / "summary_plots"
+    for d in [
+        run_output_dir,
+        snapshots_json_dir,
+        snapshots_fig_dir,
+        snapshot_well_configs_dir,
+        summary_plots_dir,
+    ]:
+        d.mkdir(parents=True, exist_ok=True)
+    tqdm.write(f"Saving active-learning artifacts to {run_output_dir}")
 
     # 2. Preload Base Geologies to Memory Space
     open_h5_handles = [h5py.File(g, "r") for g in geology_files]
     h5_physics_contexts = []
+    geology_metadata = []
 
     first_perm_x_grid = None
     z_max, nx, ny = 0, 0, 0
 
-    print("Pre-loading base geology tensors...")
-    for src in open_h5_handles:
+    tqdm.write("Pre-loading base geology tensors...")
+    for geo_idx, src in enumerate(open_h5_handles):
+        geo_name = Path(geology_files[geo_idx]).stem
+        geo_meta = _read_geology_metadata(src, geology_name=geo_name)
+        geology_metadata.append(geo_meta)
+
         valid_mask = get_valid_mask(src)
         z_cutoff = find_z_cutoff(valid_mask, invalid_threshold=0.95)
         valid_mask_cropped = valid_mask[:z_cutoff]
@@ -183,6 +474,8 @@ def main() -> None:
             }
         )
 
+    geology_names = [Path(g).stem for g in geology_files]
+
     # Plot base arrays
     perm_x_grids = [
         p["physics_dict"]["PermX"].cpu().numpy() for p in h5_physics_contexts
@@ -190,10 +483,233 @@ def main() -> None:
     z_slice = perm_x_grids[0].shape[0] // 2
     backgrounds = [grid[z_slice, :, :].T for grid in perm_x_grids]
 
+    # Utilities for rendering
+    MANIM_BG = "#000000"
+    MANIM_BLUE = "#58C4DD"
+    MANIM_ORANGE = "#FF9000"
+    MANIM_WHITE = "#FFFFFF"
+    MANIM_GREY = "#888888"
+
+    FONT_SIZE = 18
+    TITLE_SIZE = 17
+    TICK_SIZE = 16
+    LEGEND_SIZE = 16
+    CBAR_LABEL_SIZE = 16
+
+    plt.rcParams.update(
+        {
+            "font.size": FONT_SIZE,
+            "axes.titlesize": TITLE_SIZE,
+            "axes.labelsize": FONT_SIZE,
+            "xtick.labelsize": TICK_SIZE,
+            "ytick.labelsize": TICK_SIZE,
+            "legend.fontsize": LEGEND_SIZE,
+            "figure.facecolor": MANIM_BG,
+            "axes.facecolor": MANIM_BG,
+            "axes.edgecolor": MANIM_WHITE,
+            "axes.labelcolor": MANIM_WHITE,
+            "xtick.color": MANIM_WHITE,
+            "ytick.color": MANIM_WHITE,
+            "text.color": MANIM_WHITE,
+            "legend.facecolor": "#111111",
+            "legend.edgecolor": MANIM_GREY,
+        }
+    )
+
+    def _style_ax(ax):
+        ax.set_facecolor(MANIM_BG)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(MANIM_WHITE)
+        ax.tick_params(colors=MANIM_WHITE, labelsize=TICK_SIZE)
+        ax.xaxis.label.set_color(MANIM_WHITE)
+        ax.yaxis.label.set_color(MANIM_WHITE)
+        ax.title.set_color(MANIM_WHITE)
+
+    def _save_snapshot_figure(
+        snapshot_payload: dict[str, Any],
+        fig_path: Path,
+    ) -> None:
+        fig, axes = plt.subplots(
+            1,
+            K,
+            figsize=(8 * K, 7),
+            facecolor=MANIM_BG,
+        )
+        if K == 1:
+            axes = [axes]
+
+        wells = snapshot_payload["wells"]
+
+        for k in range(K):
+            ax_map = axes[k]
+            _style_ax(ax_map)
+            bg = backgrounds[k]
+            im = ax_map.imshow(
+                bg,
+                origin="lower",
+                cmap="viridis",
+                alpha=0.55,
+                extent=[0, perm_x_grids[k].shape[1], 0, perm_x_grids[k].shape[2]],
+            )
+            cbar = plt.colorbar(im, ax=ax_map)
+            cbar.ax.tick_params(labelsize=TICK_SIZE, colors=MANIM_WHITE)
+            cbar.set_label(
+                "Normalized Log PermX", fontsize=CBAR_LABEL_SIZE, color=MANIM_WHITE
+            )
+            cbar.outline.set_edgecolor(MANIM_WHITE)
+
+            for w in wells:
+                is_inj = w["type"] == "injector"
+                marker = "^" if is_inj else "v"
+                color = MANIM_BLUE if is_inj else MANIM_ORANGE
+                ax_map.scatter(
+                    w["x"],
+                    w["y"],
+                    marker=marker,
+                    color=color,
+                    s=140,
+                    edgecolors=MANIM_WHITE,
+                    linewidths=1.0,
+                    alpha=0.9,
+                )
+
+            ax_map.set_xlabel("X Coordinate", fontsize=FONT_SIZE, color=MANIM_WHITE)
+            ax_map.set_ylabel(
+                "Y Coordinate" if k == 0 else "",
+                fontsize=FONT_SIZE,
+                color=MANIM_WHITE,
+            )
+            ax_map.set_title(
+                f"{geology_names[k]} (iter={snapshot_payload['iteration']})",
+                fontsize=TITLE_SIZE,
+                color=MANIM_WHITE,
+            )
+
+        fig.suptitle(
+            f"Run {snapshot_payload['run_id']} Iter {snapshot_payload['iteration']}\n"
+            f"Mean Rev={snapshot_payload['summary']['mean_discounted_total_revenue']:.3f}, "
+            f"Mean Energy={snapshot_payload['summary']['mean_total_energy_production']:.3f}",
+            fontsize=TITLE_SIZE,
+            color=MANIM_WHITE,
+        )
+
+        fig.tight_layout()
+        fig.savefig(fig_path, dpi=180, bbox_inches="tight", facecolor=MANIM_BG)
+        plt.close(fig)
+
+    snapshot_records: list[dict[str, Any]] = []
+
+    def _log_snapshot(
+        run_id: int,
+        iteration: int,
+        is_final_iteration: bool,
+        coords_xyz: np.ndarray,
+        revenue_by_geo: np.ndarray,
+        energy_by_geo: np.ndarray,
+    ) -> None:
+        payload = _build_snapshot_payload(
+            run_id=run_id,
+            iteration=iteration,
+            is_final_iteration=is_final_iteration,
+            coords_xyz=coords_xyz,
+            is_injector_list=is_injector_list,
+            geology_files=geology_files,
+            geology_names=geology_names,
+            geology_metadata=geology_metadata,
+            revenue_by_geo=revenue_by_geo,
+            energy_by_geo=energy_by_geo,
+        )
+        snapshot_id = payload["snapshot_id"]
+        json_path = snapshots_json_dir / f"{snapshot_id}.json"
+        fig_path = snapshots_fig_dir / f"{snapshot_id}.png"
+        jl_path = snapshot_well_configs_dir / f"{snapshot_id}.jl"
+
+        with open(json_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        _save_snapshot_figure(payload, fig_path)
+
+        jl_text = _to_julia_wells_text(
+            coords_xyz=coords_xyz,
+            is_injector_list=is_injector_list,
+            score=float(payload["summary"]["mean_discounted_total_revenue"]),
+            score_label="Mean Discounted Revenue",
+            geology_revenue=[
+                p["discounted_total_revenue"] for p in payload["predictions_by_geology"]
+            ],
+            geology_energy=[
+                p["total_energy_production"] for p in payload["predictions_by_geology"]
+            ],
+        )
+        with open(jl_path, "w") as f:
+            f.write(jl_text)
+
+        per_geo_jl_entries = []
+        for pred in payload["predictions_by_geology"]:
+            geo_idx = int(pred["geology_index"])
+            geo_name = pred["geology_name"]
+            geo_file = pred["geology_file"]
+            geo_cfg_id = pred.get("geology_config_id")
+            geo_scenario_name = pred.get("geology_scenario_name")
+            geo_sample_num = pred.get("geology_sample_num")
+
+            geo_cfg_token = _sanitize_id_token(
+                geo_cfg_id if geo_cfg_id is not None else f"geo{geo_idx:03d}"
+            )
+            per_geo_stem = f"{snapshot_id}__geo{geo_idx:02d}__cfg_{geo_cfg_token}"
+            per_geo_jl_path = snapshot_well_configs_dir / f"{per_geo_stem}.jl"
+
+            per_geo_jl_text = _to_julia_wells_text(
+                coords_xyz=coords_xyz,
+                is_injector_list=is_injector_list,
+                score=float(pred["discounted_total_revenue"]),
+                score_label="Discounted Revenue (Geology-Specific)",
+                geology_file=geo_file,
+                geology_name=geo_name,
+                geology_config_id=geo_cfg_id,
+                geology_scenario_name=geo_scenario_name,
+                geology_sample_num=geo_sample_num,
+                predicted_discounted_revenue=float(pred["discounted_total_revenue"]),
+                predicted_total_energy=float(pred["total_energy_production"]),
+            )
+            with open(per_geo_jl_path, "w") as f:
+                f.write(per_geo_jl_text)
+
+            per_geo_jl_entries.append(
+                {
+                    "geology_index": geo_idx,
+                    "geology_name": geo_name,
+                    "geology_file": geo_file,
+                    "geology_config_id": geo_cfg_id,
+                    "geology_scenario_name": geo_scenario_name,
+                    "geology_sample_num": geo_sample_num,
+                    "well_config_path": str(per_geo_jl_path),
+                }
+            )
+
+        snapshot_records.append(
+            {
+                "snapshot_id": snapshot_id,
+                "run_id": int(run_id),
+                "iteration": int(iteration),
+                "json_path": str(json_path),
+                "figure_path": str(fig_path),
+                "well_config_path": str(jl_path),
+                "well_config_paths_by_geology": per_geo_jl_entries,
+                "mean_discounted_total_revenue": float(
+                    payload["summary"]["mean_discounted_total_revenue"]
+                ),
+                "mean_total_energy_production": float(
+                    payload["summary"]["mean_total_energy_production"]
+                ),
+            }
+        )
+
     # 3. Optuna CMA-ES Study Setup
     num_wells = len(config["wells"])
-    print(
-        f"Initializing Optuna CMA-ES for {num_samples_N} trials targeting {num_wells} wells..."
+    tqdm.write(
+        f"Initializing Optuna CMA-ES for {num_samples_N} trials targeting {num_wells} wells "
+        f"(objective: discounted revenue)..."
     )
 
     sampler = CmaEsSampler(seed=42)
@@ -208,14 +724,18 @@ def main() -> None:
         is_injector_list.append(w_type == "injector")
 
     # 4. Process in Chunks explicitly asking Optuna
+    all_final_revenues = []  # (N,) length array tracing final mean discounted revenues
     all_final_energies = []  # (N,) length array tracing final mean energies
     all_trajectories = []  # List of arrays [steps+1, W, 3]
-    all_energy_tracks = []  # List of arrays [steps+1, K]
+    all_revenue_tracks = []  # List of arrays [steps+1, K]
 
     K = len(geology_files)
 
-    print(f"\n--- Starting Batched Global-Local Optuna Pipeline ---")
-    for chunk_start in range(0, num_samples_N, batch_size_M):
+    tqdm.write("\n--- Starting Batched Global-Local Optuna Pipeline ---")
+    for batch_index, chunk_start in enumerate(
+        tqdm(range(0, num_samples_N, batch_size_M), desc="Batches", unit="batch"),
+        start=1,
+    ):
         batch_start_time = time.time()
         M_actual = min(batch_size_M, num_samples_N - chunk_start)
 
@@ -230,10 +750,12 @@ def main() -> None:
                 w_type = config["wells"][w].get("type", "injector").lower()
                 cfg.append({"x": rand_x, "y": rand_y, "depth": depth, "type": w_type})
             chunk_cfgs.append(cfg)
-        chunk_graphs = []
+        chunk_graphs_revenue = []
+        chunk_graphs_energy = []
 
-        print(
-            f"Loading/Building PyG models for batch {chunk_start // batch_size_M + 1} ({M_actual} configurations evaluated structurally over {K} geologies)..."
+        tqdm.write(
+            f"Loading/Building PyG models for batch {batch_index} "
+            f"({M_actual} configurations evaluated structurally over {K} geologies)..."
         )
         # Build batched graphs identically
         for m_idx, w_cfg in enumerate(chunk_cfgs):
@@ -287,18 +809,31 @@ def main() -> None:
                     is_well, x_idx, y_idx, src
                 )
 
-                raw_graph = build_single_hetero_data(
+                raw_graph_revenue = build_single_hetero_data(
                     wells=wells,
                     physics_dict=p_ctx["physics_dict"],
                     full_shape=p_ctx["full_shape"],
-                    target="graph_energy_total",
+                    target=revenue_target,
                     target_val=0.0,
                     vertical_profile=vertical_profiles,
                     case_id=f"run{chunk_start+m_idx}_geo{k_idx}",
                 )
-                chunk_graphs.append(scaler.transform_graph(raw_graph))
+                raw_graph_energy = build_single_hetero_data(
+                    wells=wells,
+                    physics_dict=p_ctx["physics_dict"],
+                    full_shape=p_ctx["full_shape"],
+                    target=energy_target,
+                    target_val=0.0,
+                    vertical_profile=vertical_profiles,
+                    case_id=f"run{chunk_start+m_idx}_geo{k_idx}",
+                )
+                chunk_graphs_revenue.append(
+                    revenue_scaler.transform_graph(raw_graph_revenue)
+                )
+                chunk_graphs_energy.append(energy_scaler.transform_graph(raw_graph_energy))
 
-        batch = Batch.from_data_list(chunk_graphs).to(device)
+        batch_revenue = Batch.from_data_list(chunk_graphs_revenue).to(device)
+        batch_energy = Batch.from_data_list(chunk_graphs_energy).to(device)
 
         continuous_starts = []
         for w_cfg in chunk_cfgs:
@@ -317,21 +852,28 @@ def main() -> None:
         chunk_coords_hist = [
             base_coords.clone().detach().cpu().numpy()
         ]  # list of (M, W, 3)
-        chunk_energy_hist = []  # list of (M, K)
+        chunk_revenue_hist = []  # list of (M, K)
 
-        print(f"Optimizing chunk for {args.optimization_steps} iterations...")
-        for step in range(args.optimization_steps):
+        steps_iter = tqdm(
+            range(args.optimization_steps),
+            desc=f"Batch {batch_index} optimize",
+            unit="step",
+            leave=False,
+        )
+        for step in steps_iter:
             optimizer.zero_grad()
 
             expanded_coords = base_coords.unsqueeze(1).repeat(1, K, 1, 1).view(-1, 3)
-            batch["well"].pos_xyz = expanded_coords
+            batch_revenue["well"].pos_xyz = expanded_coords
+            batch_energy["well"].pos_xyz = expanded_coords
 
-            predicted_energy = model(batch)  # (M * K, 1)
-            pred_split = predicted_energy.view(M_actual, K)
-            chunk_energy_hist.append(pred_split.clone().detach().cpu().numpy())
+            predicted_revenue_scaled = revenue_model(batch_revenue).view(M_actual, K)
+            chunk_revenue_hist.append(
+                predicted_revenue_scaled.clone().detach().cpu().numpy()
+            )
 
             # Gradients cleanly distribute independently!
-            loss = -predicted_energy.sum()
+            loss = -predicted_revenue_scaled.sum()
             loss.backward()
 
             gradients = base_coords.grad  # (M, W, 3)
@@ -366,98 +908,96 @@ def main() -> None:
         # Extract Terminal Output
         with torch.no_grad():
             expanded_coords = base_coords.unsqueeze(1).repeat(1, K, 1, 1).view(-1, 3)
-            batch["well"].pos_xyz = expanded_coords
-            final_pred = model(batch).view(M_actual, K).detach().cpu().numpy()
-            chunk_energy_hist.append(final_pred)
+            batch_revenue["well"].pos_xyz = expanded_coords
+            final_revenue_scaled = (
+                revenue_model(batch_revenue).view(M_actual, K).detach().cpu().numpy()
+            )
+            chunk_revenue_hist.append(final_revenue_scaled)
+
+            batch_energy["well"].pos_xyz = expanded_coords
+            final_energy_scaled = (
+                energy_model(batch_energy).view(M_actual, K).detach().cpu().numpy()
+            )
+            final_energy_unnorm = energy_scaler.inverse_targets(
+                final_energy_scaled.reshape(-1, 1)
+            ).reshape(-1, K)
+
+            final_coords_np = base_coords.detach().cpu().numpy()
+            for m in range(M_actual):
+                run_id = chunk_start + m
+                revenue_by_geo = _inverse_targets_1d(
+                    revenue_scaler, final_revenue_scaled[m]
+                )
+                energy_by_geo = _inverse_targets_1d(energy_scaler, final_energy_scaled[m])
+                should_log_snapshot = ((run_id + 1) % num_log_iter == 0)
+                if should_log_snapshot:
+                    _log_snapshot(
+                        run_id=run_id,
+                        iteration=args.optimization_steps,
+                        is_final_iteration=True,
+                        coords_xyz=final_coords_np[m],
+                        revenue_by_geo=revenue_by_geo,
+                        energy_by_geo=energy_by_geo,
+                    )
 
         chunk_coords_np = np.stack(chunk_coords_hist, axis=0)  # (steps+1, M, W, 3)
         chunk_coords_np = np.transpose(
             chunk_coords_np, (1, 0, 2, 3)
         )  # (M, steps+1, W, 3)
 
-        chunk_energy_np = np.stack(chunk_energy_hist, axis=0)  # (steps+1, M, K)
-        chunk_energy_np = np.transpose(chunk_energy_np, (1, 0, 2))  # (M, steps+1, K)
+        chunk_revenue_np = np.stack(chunk_revenue_hist, axis=0)  # (steps+1, M, K)
+        chunk_revenue_np = np.transpose(
+            chunk_revenue_np, (1, 0, 2)
+        )  # (M, steps+1, K)
 
         for m in range(M_actual):
             all_trajectories.append(chunk_coords_np[m])
-            flat_energies = chunk_energy_np[m].reshape(-1, 1)
-            unnorm_flat = scaler.inverse_targets(flat_energies).flatten()
-            unnorm = unnorm_flat.reshape(-1, K)
+            revenue_unnorm = revenue_scaler.inverse_targets(
+                chunk_revenue_np[m].reshape(-1, 1)
+            ).reshape(-1, K)
 
-            all_energy_tracks.append(unnorm)
-            final_mean_energy = unnorm[-1].mean()
-            all_final_energies.append(final_mean_energy)
+            all_revenue_tracks.append(revenue_unnorm)
 
-            # Baldwinian Step: Give Optuna the Local Optimized Energy
-            study.tell(chunk_trials[m], float(final_mean_energy))
+            final_mean_revenue = revenue_unnorm[-1].mean()
+
+            all_final_revenues.append(final_mean_revenue)
+            all_final_energies.append(final_energy_unnorm[m].mean())
+
+            # Baldwinian Step: Give Optuna the local optimized discounted revenue.
+            study.tell(chunk_trials[m], float(final_mean_revenue))
 
         batch_elapsed = time.time() - batch_start_time
-        print(
-            f"Computed batch {chunk_start // batch_size_M + 1} / {int(np.ceil(num_samples_N / batch_size_M))} in {batch_elapsed:.2f}s"
+        tqdm.write(
+            f"Computed batch {batch_index} / {int(np.ceil(num_samples_N / batch_size_M))} in {batch_elapsed:.2f}s"
         )
 
-    print("\n--- Optimization Complete ---")
+    tqdm.write("\n--- Optimization Complete ---")
 
     # 5. Output Identifications
+    all_final_revenues = np.array(all_final_revenues)
     all_final_energies = np.array(all_final_energies)
-    best_idx = np.argmax(all_final_energies)
-    worst_idx = np.argmin(all_final_energies)
-    sorted_idx = np.argsort(all_final_energies)
-    avg_idx = sorted_idx[len(all_final_energies) // 2]
+    best_idx = np.argmax(all_final_revenues)
+    worst_idx = np.argmin(all_final_revenues)
+    sorted_idx = np.argsort(all_final_revenues)
+    avg_idx = sorted_idx[len(all_final_revenues) // 2]
 
-    print(f"Top    Run {best_idx} Output Energy: {all_final_energies[best_idx]:.3f}")
-    print(f"Mid    Run {avg_idx} Output Energy: {all_final_energies[avg_idx]:.3f}")
-    print(f"Worst  Run {worst_idx} Output Energy: {all_final_energies[worst_idx]:.3f}")
-
-    # Utilities for rendering
-    MANIM_BG = "#000000"
-    MANIM_BLUE = "#58C4DD"
-    MANIM_ORANGE = "#FF9000"
-    MANIM_WHITE = "#FFFFFF"
-    MANIM_GREY = "#888888"
-
-    FONT_SIZE = 18
-    TITLE_SIZE = 17
-    TICK_SIZE = 16
-    LEGEND_SIZE = 16
-    CBAR_LABEL_SIZE = 16
-
-    plt.rcParams.update(
-        {
-            "font.size": FONT_SIZE,
-            "axes.titlesize": TITLE_SIZE,
-            "axes.labelsize": FONT_SIZE,
-            "xtick.labelsize": TICK_SIZE,
-            "ytick.labelsize": TICK_SIZE,
-            "legend.fontsize": LEGEND_SIZE,
-            "figure.facecolor": MANIM_BG,
-            "axes.facecolor": MANIM_BG,
-            "axes.edgecolor": MANIM_WHITE,
-            "axes.labelcolor": MANIM_WHITE,
-            "xtick.color": MANIM_WHITE,
-            "ytick.color": MANIM_WHITE,
-            "text.color": MANIM_WHITE,
-            "legend.facecolor": "#111111",
-            "legend.edgecolor": MANIM_GREY,
-        }
+    tqdm.write(
+        f"Top    Run {best_idx} Discounted Revenue: {all_final_revenues[best_idx]:.3f} | "
+        f"Energy: {all_final_energies[best_idx]:.3f}"
     )
-
-    def _style_ax(ax):
-        ax.set_facecolor(MANIM_BG)
-        for spine in ax.spines.values():
-            spine.set_edgecolor(MANIM_WHITE)
-        ax.tick_params(colors=MANIM_WHITE, labelsize=TICK_SIZE)
-        ax.xaxis.label.set_color(MANIM_WHITE)
-        ax.yaxis.label.set_color(MANIM_WHITE)
-        ax.title.set_color(MANIM_WHITE)
-
-    os.makedirs("plots", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tqdm.write(
+        f"Mid    Run {avg_idx} Discounted Revenue: {all_final_revenues[avg_idx]:.3f} | "
+        f"Energy: {all_final_energies[avg_idx]:.3f}"
+    )
+    tqdm.write(
+        f"Worst  Run {worst_idx} Discounted Revenue: {all_final_revenues[worst_idx]:.3f} | "
+        f"Energy: {all_final_energies[worst_idx]:.3f}"
+    )
 
     # ========================================================
     # FIGURE 1: ALL RUNS COMBINED
     # ========================================================
-    print("\n--- Generating Figure 1 (All Runs Map) ---")
+    tqdm.write("\n--- Generating Figure 1 (All Runs Map) ---")
     fig1, axes1 = plt.subplots(
         1,
         K + 1,
@@ -515,7 +1055,7 @@ def main() -> None:
 
     steps_range = range(args.optimization_steps + 1)
     for n_idx in range(num_samples_N):
-        mean_track = all_energy_tracks[n_idx].mean(axis=1)
+        mean_track = all_revenue_tracks[n_idx].mean(axis=1)
         ax_energy1.plot(
             steps_range,
             mean_track,
@@ -532,16 +1072,16 @@ def main() -> None:
         alpha=0.5,
         linewidth=2.0,
         color=MANIM_BLUE,
-        label="Mean Batch Energy",
+        label="Mean Batch Discounted Revenue",
     )
     ax_energy1.set_xlabel(
         "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
     )
     ax_energy1.set_ylabel(
-        "Total Energy (Non-Norm)", fontsize=FONT_SIZE, color=MANIM_WHITE
+        "Discounted Revenue (Non-Norm)", fontsize=FONT_SIZE, color=MANIM_WHITE
     )
     ax_energy1.set_title(
-        f"Energy Traces across {num_samples_N} CMA-ES Samples",
+        f"Discounted Revenue Traces across {num_samples_N} CMA-ES Samples",
         fontsize=TITLE_SIZE,
         color=MANIM_WHITE,
     )
@@ -554,14 +1094,14 @@ def main() -> None:
     )
 
     plt.tight_layout()
-    plot_path1 = f"plots/well_trajectories_cmaes_{timestamp}_all.png"
+    plot_path1 = summary_plots_dir / f"well_trajectories_cmaes_{timestamp}_all.png"
     fig1.savefig(plot_path1, dpi=200, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig1)
 
     # ========================================================
     # FIGURE 2: BEST, WORST, AVERAGE HIGHLIGHTS
     # ========================================================
-    print("--- Generating Figure 2 (Selections Highlights Map) ---")
+    tqdm.write("--- Generating Figure 2 (Selections Highlights Map) ---")
     fig2, axes2 = plt.subplots(
         1,
         K + 1,
@@ -672,7 +1212,7 @@ def main() -> None:
     }  # Green, Blue, Red
     linewidths = {"Best": 4.0, "Avg": 2.5, "Worst": 2.5}
     for trace_name, idx in subsets:
-        mean_track = all_energy_tracks[idx].mean(axis=1)  # trace mean across geologies
+        mean_track = all_revenue_tracks[idx].mean(axis=1)  # trace mean across geologies
         ax_energy2.plot(
             steps_range,
             mean_track,
@@ -687,10 +1227,10 @@ def main() -> None:
         "Optimization Iteration", fontsize=FONT_SIZE, color=MANIM_WHITE
     )
     ax_energy2.set_ylabel(
-        "Total Energy (Non-Norm)", fontsize=FONT_SIZE, color=MANIM_WHITE
+        "Discounted Revenue (Non-Norm)", fontsize=FONT_SIZE, color=MANIM_WHITE
     )
     ax_energy2.set_title(
-        "Energy Traces (Highlights)", fontsize=TITLE_SIZE, color=MANIM_WHITE
+        "Discounted Revenue Traces (Highlights)", fontsize=TITLE_SIZE, color=MANIM_WHITE
     )
     ax_energy2.grid(True, linestyle="--", alpha=0.3, color=MANIM_GREY)
     ax_energy2.legend(
@@ -701,14 +1241,14 @@ def main() -> None:
     )
 
     plt.tight_layout()
-    plot_path2 = f"plots/well_trajectories_cmaes_{timestamp}_highlights.png"
+    plot_path2 = summary_plots_dir / f"well_trajectories_cmaes_{timestamp}_highlights.png"
     fig2.savefig(plot_path2, dpi=200, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig2)
 
     # ========================================================
     # FIGURE 3: HEATMAP OVERALL DISTRIBUTION
     # ========================================================
-    print("--- Generating Figure 3 (Optimization Layout Heatmaps) ---")
+    tqdm.write("--- Generating Figure 3 (Optimization Layout Heatmaps) ---")
     fig3, axes3 = plt.subplots(1, 2, figsize=(16, 7), facecolor=MANIM_BG)
     _style_ax(axes3[0])
     _style_ax(axes3[1])
@@ -772,18 +1312,18 @@ def main() -> None:
         ax.set_ylim(0, ny)
 
     plt.tight_layout()
-    plot_path3 = f"plots/well_trajectories_cmaes_{timestamp}_heatmap.png"
+    plot_path3 = summary_plots_dir / f"well_trajectories_cmaes_{timestamp}_heatmap.png"
     fig3.savefig(plot_path3, dpi=200, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig3)
 
-    print(f"Saved CMA-ES All Runs plot to {plot_path1}")
-    print(f"Saved CMA-ES Highlights plot to {plot_path2}")
-    print(f"Saved CMA-ES Heatmap distribution to {plot_path3}")
+    tqdm.write(f"Saved CMA-ES All Runs plot to {plot_path1}")
+    tqdm.write(f"Saved CMA-ES Highlights plot to {plot_path2}")
+    tqdm.write(f"Saved CMA-ES Heatmap distribution to {plot_path3}")
 
     # ========================================================
     # FIGURE 4: OPTUNA OPTIMIZATION HISTORY
     # ========================================================
-    print("--- Generating Figure 4 (Optuna Convergence History) ---")
+    tqdm.write("--- Generating Figure 4 (Optuna Convergence History) ---")
     ax_hist = plot_optimization_history(study)
     fig4 = ax_hist.figure
     fig4.set_size_inches(12, 7)
@@ -798,33 +1338,13 @@ def main() -> None:
         for text in legend.get_texts():
             text.set_color(MANIM_WHITE)
             
-    plot_path4 = f"plots/well_trajectories_cmaes_{timestamp}_history.png"
+    plot_path4 = summary_plots_dir / f"well_trajectories_cmaes_{timestamp}_history.png"
     fig4.tight_layout()
     fig4.savefig(plot_path4, dpi=200, bbox_inches="tight", facecolor=MANIM_BG)
     plt.close(fig4)
-    print(f"Saved CMA-ES Optuna History to {plot_path4}")
+    tqdm.write(f"Saved CMA-ES Optuna History to {plot_path4}")
 
-    if args.export_jl:
-        final_coords = all_trajectories[best_idx][-1]
-        with open(args.export_jl, "w") as f:
-            f.write("# Auto-generated by Differentiable Inference Proxy\n")
-            f.write(f"# Top CMA-ES Score: {all_final_energies[best_idx]:.3f}\n")
-            f.write("wells = [\n")
-            for w in range(num_wells):
-                x, y, z = final_coords[w]
-                j_idx = int(round(float(x))) + 1
-                i_idx = int(round(float(y))) + 1
-                k_idx = int(round(float(z))) + 1
-
-                is_inj = is_injector_list[w]
-                well_type = '"INJECTOR"' if is_inj else '"PRODUCER"'
-                rate = 8000.0 if is_inj else -8000.0
-
-                f.write(f"    ({i_idx}, {j_idx}, {k_idx}, {well_type}, {rate}),\n")
-            f.write("]\n")
-        print(f"Exported optimized TOP well configuration to {args.export_jl}")
-
-    csv_path = f"plots/well_trajectories_cmaes_{timestamp}_results.csv"
+    csv_path = run_output_dir / f"well_trajectories_cmaes_{timestamp}_results.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -835,23 +1355,77 @@ def main() -> None:
                 "depth_z",
                 "final_x",
                 "final_y",
+                "mean_discounted_total_revenue",
                 "mean_total_energy",
             ]
         )
         for n_idx in range(num_samples_N):
             history = all_trajectories[n_idx]
+            mean_revenue = all_final_revenues[n_idx]
             mean_energy = all_final_energies[n_idx]
             final_coords = history[-1]
             for w in range(num_wells):
                 x, y, z = final_coords[w]
                 w_type = "injector" if is_injector_list[w] else "producer"
-                writer.writerow([n_idx, w, w_type, z, x, y, mean_energy])
-    print(f"Exported complete final configuration tables to {csv_path}")
+                writer.writerow([n_idx, w, w_type, z, x, y, mean_revenue, mean_energy])
+    tqdm.write(f"Exported complete final configuration tables to {csv_path}")
+
+    snapshot_manifest_path = run_output_dir / f"snapshot_manifest_{timestamp}.json"
+    run_manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "config_path": str(config_path),
+        "objective": "maximize_discounted_total_revenue",
+        "num_samples_N": int(num_samples_N),
+        "batch_size_M": int(batch_size_M),
+        "optimization_steps": int(args.optimization_steps),
+        "num_log_iter": int(num_log_iter),
+        "geology_files": [str(g) for g in geology_files],
+        "geology_metadata": [
+            {
+                "geology_file": str(geology_files[k]),
+                "geology_name": geology_names[k],
+                "geology_config_id": geology_metadata[k].get("geology_config_id"),
+                "geology_rep_num": geology_metadata[k].get("rep_num"),
+                "geology_scenario_name": geology_metadata[k].get("scenario_name"),
+                "geology_sample_num": geology_metadata[k].get("sample_num"),
+                "geology_data_format_version": geology_metadata[k].get(
+                    "data_format_version"
+                ),
+                "geology_model_version": geology_metadata[k].get("model_version"),
+            }
+            for k in range(len(geology_files))
+        ],
+        "revenue_model": {
+            "checkpoint": str(revenue_checkpoint_path),
+            "scaler": str(revenue_scaler_path),
+            "target": revenue_target,
+        },
+        "energy_model": {
+            "checkpoint": str(energy_checkpoint_path),
+            "scaler": str(energy_scaler_path),
+            "target": energy_target,
+        },
+        "summary_plots": [
+            str(plot_path1),
+            str(plot_path2),
+            str(plot_path3),
+            str(plot_path4),
+        ],
+        "results_csv": str(csv_path),
+        "snapshot_count": len(snapshot_records),
+        "snapshots": snapshot_records,
+    }
+    with open(snapshot_manifest_path, "w") as f:
+        json.dump(run_manifest, f, indent=2)
+    tqdm.write(f"Saved snapshot manifest to {snapshot_manifest_path}")
+
+    for h in open_h5_handles:
+        h.close()
 
     elapsed_time = time.time() - start_time
     minutes = int(elapsed_time // 60)
     seconds = elapsed_time % 60
-    print(f"\nTotal Script Runtime: {minutes}m {seconds:.2f}s")
+    tqdm.write(f"\nTotal Script Runtime: {minutes}m {seconds:.2f}s")
 
 
 if __name__ == "__main__":
