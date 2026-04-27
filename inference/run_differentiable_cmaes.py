@@ -297,12 +297,6 @@ def main() -> None:
         help="Path to input JSON configuration file",
     )
     parser.add_argument(
-        "--optimization-steps",
-        type=int,
-        default=50,
-        help="Number of gradient ascent steps",
-    )
-    parser.add_argument(
         "--learning-rate", type=float, default=0.5, help="LR for spatial optimization"
     )
     parser.add_argument(
@@ -383,6 +377,11 @@ def main() -> None:
     num_log_iter = int(config.get("num_log_iter", 5))
     if num_log_iter <= 0:
         raise ValueError("'num_log_iter' must be >= 1")
+    log_every_n_steps = int(config.get("log_every_n_steps", 0))
+    if log_every_n_steps < 0:
+        raise ValueError("'log_every_n_steps' must be >= 0")
+
+    optimization_steps = int(config.get("optimization_steps", 50))
 
     if args.gpu >= 0 and torch.cuda.is_available():
         if args.gpu >= torch.cuda.device_count():
@@ -854,8 +853,63 @@ def main() -> None:
         ]  # list of (M, W, 3)
         chunk_revenue_hist = []  # list of (M, K)
 
+        def _should_log_step(iteration: int) -> bool:
+            if log_every_n_steps <= 0:
+                return iteration == optimization_steps
+            if iteration == 0:
+                return True
+            return (iteration % log_every_n_steps) == 0 or iteration == optimization_steps
+
+        def _predict_scaled(coords_tensor: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+            expanded = coords_tensor.unsqueeze(1).repeat(1, K, 1, 1).view(-1, 3)
+            batch_revenue["well"].pos_xyz = expanded
+            batch_energy["well"].pos_xyz = expanded
+            revenue_scaled = revenue_model(batch_revenue).view(M_actual, K)
+            energy_scaled = energy_model(batch_energy).view(M_actual, K)
+            return (
+                revenue_scaled.detach().cpu().numpy(),
+                energy_scaled.detach().cpu().numpy(),
+            )
+
+        def _log_batch_snapshot(
+            iteration: int,
+            coords_np: np.ndarray,
+            revenue_scaled_np: np.ndarray,
+            energy_scaled_np: np.ndarray,
+            is_final_iteration: bool,
+        ) -> None:
+            for m in range(M_actual):
+                run_id = chunk_start + m
+                if ((run_id + 1) % num_log_iter) != 0:
+                    continue
+                revenue_by_geo = _inverse_targets_1d(
+                    revenue_scaler, revenue_scaled_np[m]
+                )
+                energy_by_geo = _inverse_targets_1d(
+                    energy_scaler, energy_scaled_np[m]
+                )
+                _log_snapshot(
+                    run_id=run_id,
+                    iteration=iteration,
+                    is_final_iteration=is_final_iteration,
+                    coords_xyz=coords_np[m],
+                    revenue_by_geo=revenue_by_geo,
+                    energy_by_geo=energy_by_geo,
+                )
+
+        if _should_log_step(0):
+            with torch.no_grad():
+                revenue_scaled_np, energy_scaled_np = _predict_scaled(base_coords)
+            _log_batch_snapshot(
+                iteration=0,
+                coords_np=base_coords.detach().cpu().numpy(),
+                revenue_scaled_np=revenue_scaled_np,
+                energy_scaled_np=energy_scaled_np,
+                is_final_iteration=False,
+            )
+
         steps_iter = tqdm(
-            range(args.optimization_steps),
+            range(optimization_steps),
             desc=f"Batch {batch_index} optimize",
             unit="step",
             leave=False,
@@ -905,6 +959,18 @@ def main() -> None:
 
             chunk_coords_hist.append(base_coords.clone().detach().cpu().numpy())
 
+            iteration = step + 1
+            if _should_log_step(iteration):
+                with torch.no_grad():
+                    revenue_scaled_np, energy_scaled_np = _predict_scaled(base_coords)
+                _log_batch_snapshot(
+                    iteration=iteration,
+                    coords_np=base_coords.detach().cpu().numpy(),
+                    revenue_scaled_np=revenue_scaled_np,
+                    energy_scaled_np=energy_scaled_np,
+                    is_final_iteration=(iteration == optimization_steps),
+                )
+
         # Extract Terminal Output
         with torch.no_grad():
             expanded_coords = base_coords.unsqueeze(1).repeat(1, K, 1, 1).view(-1, 3)
@@ -923,22 +989,6 @@ def main() -> None:
             ).reshape(-1, K)
 
             final_coords_np = base_coords.detach().cpu().numpy()
-            for m in range(M_actual):
-                run_id = chunk_start + m
-                revenue_by_geo = _inverse_targets_1d(
-                    revenue_scaler, final_revenue_scaled[m]
-                )
-                energy_by_geo = _inverse_targets_1d(energy_scaler, final_energy_scaled[m])
-                should_log_snapshot = ((run_id + 1) % num_log_iter == 0)
-                if should_log_snapshot:
-                    _log_snapshot(
-                        run_id=run_id,
-                        iteration=args.optimization_steps,
-                        is_final_iteration=True,
-                        coords_xyz=final_coords_np[m],
-                        revenue_by_geo=revenue_by_geo,
-                        energy_by_geo=energy_by_geo,
-                    )
 
         chunk_coords_np = np.stack(chunk_coords_hist, axis=0)  # (steps+1, M, W, 3)
         chunk_coords_np = np.transpose(
@@ -1053,7 +1103,7 @@ def main() -> None:
             color=MANIM_WHITE,
         )
 
-    steps_range = range(args.optimization_steps + 1)
+    steps_range = range(optimization_steps + 1)
     for n_idx in range(num_samples_N):
         mean_track = all_revenue_tracks[n_idx].mean(axis=1)
         ax_energy1.plot(
@@ -1377,7 +1427,7 @@ def main() -> None:
         "objective": "maximize_discounted_total_revenue",
         "num_samples_N": int(num_samples_N),
         "batch_size_M": int(batch_size_M),
-        "optimization_steps": int(args.optimization_steps),
+        "optimization_steps": int(optimization_steps),
         "num_log_iter": int(num_log_iter),
         "geology_files": [str(g) for g in geology_files],
         "geology_metadata": [
