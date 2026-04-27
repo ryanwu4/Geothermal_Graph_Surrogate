@@ -41,6 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 PROPERTIES = ["PermX", "PermY", "PermZ", "Porosity", "Temperature0", "Pressure0"]
 PERM_PROPS = {"PermX", "PermY", "PermZ"}
+WEPT_NULL_VALUE = np.float32(-999.0)
 
 DEFAULT_ECONOMICS_CONFIG = Path(__file__).parent / "configs" / "economics.json"
 
@@ -185,7 +186,19 @@ def process_file_and_save(
                 energy_inj_rate,
                 economics,
             )
-            well_wept = extract_wept_for_wells(src, x_idx, y_idx, depth)
+
+            # WEPT may be missing in some wrapper-generated v2.5 files.
+            # In that case, keep the case and write a null sentinel target.
+            if "Output/WEPT" in src:
+                well_wept = extract_wept_for_wells(src, x_idx, y_idx, depth)
+            else:
+                logging.warning(
+                    "Output/WEPT missing in %s. Using null WEPT sentinel (%s).",
+                    filepath,
+                    WEPT_NULL_VALUE,
+                )
+                well_wept = np.full((len(wells), 1), WEPT_NULL_VALUE, dtype=np.float32)
+
             well_tp = extract_well_tp_profiles(src, is_well, x_idx, y_idx)
             vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
 
