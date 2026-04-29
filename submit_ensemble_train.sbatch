@@ -20,7 +20,7 @@ OUTPUT_ROOT="/scratch/users/rwu4/geothermal_ensemble/discountedrevenue"
 mkdir -p "$OUTPUT_ROOT/logs"
 
 python /home/users/rwu4/Geothermal_Graph_Surrogate/train.py \
-  --h5-path /home/users/rwu4/Geothermal_Graph_Surrogate/compiled_CNN_revenue_newdiscount.h5 \
+  --h5-path /scratch/users/rwu4/geothermal_ensemble/discountedrevenue/compiled_CNN_revenue_newdiscount.h5 \
   --target graph_discounted_net_revenue \
   --seed 42 \
   --split-seed 42 \
