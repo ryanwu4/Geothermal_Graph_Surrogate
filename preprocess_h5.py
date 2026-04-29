@@ -22,6 +22,11 @@ import numpy as np
 from tqdm import tqdm
 import multiprocessing as mp
 
+from geothermal.economics import (
+    compute_discounted_net_energy_revenue,
+    compute_real_discount_rate,
+)
+
 # Try to import well extraction utilities from existing codebase
 try:
     from compile_minimal_geothermal_h5 import (
@@ -50,7 +55,7 @@ def load_economics_config(path: Path) -> dict:
     with path.open("r") as f:
         economics = json.load(f)
 
-    required = ["ENERGY_PRICE", "DISCOUNT_FACTOR"]
+    required = ["ENERGY_PRICE"]
     missing = [k for k in required if k not in economics]
     if missing:
         raise ValueError(
@@ -58,38 +63,18 @@ def load_economics_config(path: Path) -> dict:
             f"Found keys: {sorted(economics.keys())}"
         )
 
-    return economics
-
-
-def compute_discounted_net_energy_revenue(
-    energy_prod_rate: np.ndarray,
-    energy_inj_rate: np.ndarray,
-    economics: dict,
-) -> float:
-    """Compute discounted net energy revenue from annual field energy rates.
-
-    This target intentionally excludes CAPEX and OPEX so geometry-linked costs can be
-    assembled later in differentiable optimization.
-    """
-    prod = np.asarray(energy_prod_rate, dtype=np.float64).reshape(-1)
-    inj = np.asarray(energy_inj_rate, dtype=np.float64).reshape(-1)
-    if prod.shape != inj.shape:
+    if not (
+        ("NOMINAL_DISCOUNT_RATE" in economics and "INFLATION_RATE" in economics)
+        or "REAL_DISCOUNT_RATE" in economics
+    ):
         raise ValueError(
-            f"Shape mismatch for energy rates: prod {prod.shape} vs inj {inj.shape}"
+            "Economics config must define NOMINAL_DISCOUNT_RATE and INFLATION_RATE "
+            "or REAL_DISCOUNT_RATE."
         )
 
-    discount_factor = float(economics["DISCOUNT_FACTOR"])
-    if discount_factor <= -1.0:
-        raise ValueError(f"DISCOUNT_FACTOR must be > -1.0, got {discount_factor}")
+    economics["REAL_DISCOUNT_RATE"] = compute_real_discount_rate(economics)
 
-    # ENERGY_PRICE is in currency/kWh; convert to currency/kJ.
-    energy_price_kj = float(economics["ENERGY_PRICE"]) / 3600.0
-
-    net_energy_rate = prod - inj
-    years = np.arange(1, len(net_energy_rate) + 1, dtype=np.float64)
-    discount = (1.0 / (1.0 + discount_factor)) ** years
-    discounted_revenue = np.sum(net_energy_rate * energy_price_kj * discount)
-    return float(discounted_revenue)
+    return economics
 
 
 def get_valid_mask(src_group: h5py.Group) -> np.ndarray:
@@ -324,9 +309,18 @@ def main():
         out_f.attrs["target_graph_discounted_net_revenue_energy_price_kwh"] = float(
             economics["ENERGY_PRICE"]
         )
-        out_f.attrs["target_graph_discounted_net_revenue_discount_factor"] = float(
-            economics["DISCOUNT_FACTOR"]
+        real_discount_rate = compute_real_discount_rate(economics)
+        out_f.attrs["target_graph_discounted_net_revenue_real_discount_rate"] = float(
+            real_discount_rate
         )
+        if "NOMINAL_DISCOUNT_RATE" in economics:
+            out_f.attrs["target_graph_discounted_net_revenue_nominal_discount_rate"] = float(
+                economics["NOMINAL_DISCOUNT_RATE"]
+            )
+        if "INFLATION_RATE" in economics:
+            out_f.attrs["target_graph_discounted_net_revenue_inflation_rate"] = float(
+                economics["INFLATION_RATE"]
+            )
         out_f.attrs["target_graph_discounted_net_revenue_formula"] = (
             "sum_t ((FEPR_t - FEIR_t) * (ENERGY_PRICE/3600) * (1/(1+r))^t), t starts at 1"
         )

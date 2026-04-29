@@ -59,7 +59,36 @@ def main() -> None:
     parser.add_argument(
         "--h5-path", type=Path, default=Path("data_test/minimal_compiled_optimized.h5")
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Base seed for data split and ensemble seeding.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=None,
+        help=(
+            "Seed for train/val/test split. Defaults to --seed to keep the split fixed "
+            "across ensemble members."
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=0,
+        help=(
+            "Ensemble member index. This offsets the base seed so each run has distinct "
+            "initialization and shuffling."
+        ),
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("lightning_logs"),
+        help="Root directory for per-run logs, checkpoints, and plots.",
+    )
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--test-fraction", type=float, default=0.15)
 
@@ -153,8 +182,12 @@ def main() -> None:
     )
     output_dim = TP_PROFILE_STATS if args.target == "node_tp_final" else 1
 
-    L.seed_everything(args.seed, workers=True)
-    seed_all(args.seed)
+    split_seed = args.seed if args.split_seed is None else args.split_seed
+    run_seed = args.seed + args.run_id
+
+    # Use run_seed for model initialization, data loader shuffling, and other RNG.
+    L.seed_everything(run_seed, workers=True)
+    seed_all(run_seed)
     # CRITICAL: MaxPool3d backward pass has NO deterministic CUDA implementation in PyTorch.
     # Lightning's seed_everything(workers=True) strictly forces determinism causing a crash.
     torch.use_deterministic_algorithms(False, warn_only=True)
@@ -165,10 +198,19 @@ def main() -> None:
     print(f"Prediction mode: {args.target} (level={prediction_level})")
 
     # --- Top-k% withholding ---
-    logger = CSVLogger(save_dir="lightning_logs", name="geothermal_hetero_gnn")
-    plots_dir = (
-        Path(logger.log_dir) / "plots" if args.plots_dir is None else args.plots_dir
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    logger = CSVLogger(
+        save_dir=str(args.output_root),
+        name="geothermal_hetero_gnn",
+        version=f"run_{args.run_id:02d}",
     )
+    if args.plots_dir is None:
+        plots_dir = Path(logger.log_dir) / "plots"
+    else:
+        plots_subdir = args.plots_dir
+        if plots_subdir.is_absolute():
+            plots_subdir = Path(plots_subdir.name)
+        plots_dir = Path(logger.log_dir) / plots_subdir
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     if args.withhold_top_pct > 0:
@@ -185,13 +227,13 @@ def main() -> None:
             targets=targets,
             val_fraction=args.val_fraction,
             test_fraction=args.test_fraction,
-            seed=args.seed,
+            seed=split_seed,
         )
     else:
         train_val_idx, test_idx = train_test_split(
             range(len(graphs_raw)),
             test_size=args.test_fraction,
-            random_state=args.seed,
+            random_state=split_seed,
             shuffle=True,  # Keep shuffle=True for non-stratified
         )
 
@@ -201,7 +243,7 @@ def main() -> None:
         train_idx, val_idx = train_test_split(
             train_val_idx,
             test_size=val_size_relative,
-            random_state=args.seed,
+            random_state=split_seed,
             shuffle=True,  # Keep shuffle=True for non-stratified
         )
 
@@ -252,6 +294,7 @@ def main() -> None:
         num_workers=args.num_workers,
         persistent_workers=args.num_workers > 0,
         pin_memory=not args.cache_to_gpu,
+        generator=torch.Generator().manual_seed(run_seed),
     )
     val_loader = DataLoader(
         val_graphs,
@@ -294,6 +337,7 @@ def main() -> None:
         mode="min",
         save_top_k=1,
         filename="best-{epoch:03d}-{val_loss:.4f}",
+        dirpath=Path(logger.log_dir) / "checkpoints",
     )
     early_stop_cb = EarlyStopping(
         monitor="val_loss",

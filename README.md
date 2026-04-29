@@ -125,7 +125,8 @@ This processes each raw simulation HDF5 file:
 
 For discounted-revenue training, preprocessing also computes:
 - `field_discounted_net_revenue`: discounted sum of net energy revenue from annual field rates
-- uses `ENERGY_PRICE` and `DISCOUNT_FACTOR` loaded from `--economics-config`
+- uses `ENERGY_PRICE`, `NOMINAL_DISCOUNT_RATE`, and `INFLATION_RATE` loaded from `--economics-config`
+    (real discount rate computed via the Fisher equation)
 
 **First run**: computes global normalization statistics across all files and writes `norm_config.json`.
 **Subsequent runs**: reuses `norm_config.json` for consistent normalization.
@@ -160,6 +161,25 @@ Additional flags:
 - `--cache-to-gpu`: preload all training data onto GPU memory
 - `--gpu N`: select a specific GPU device
 - `--ablate GROUP [GROUP ...]`: zero out feature groups for ablation studies
+
+**Deep ensemble training (sbatch array friendly)**
+
+Use `--run-id` to create distinct ensemble members with different random seeds while
+keeping a fixed train/val/test split via `--split-seed`.
+
+```bash
+python train.py \
+    --h5-path compiled_CNN_revenue_newdiscount.h5 \
+    --target graph_discounted_net_revenue \
+    --seed 42 \
+    --split-seed 42 \
+    --run-id 0 \
+    --output-root trained/ensemble/discountedrevenue \
+    --gpu 0
+```
+
+For a 10-member sbatch array, set `--run-id $SLURM_ARRAY_TASK_ID` and keep
+`--split-seed` constant to preserve the same split across members.
 
 ### Step 3: Differentiable Inference & Well Placement Optimization
 

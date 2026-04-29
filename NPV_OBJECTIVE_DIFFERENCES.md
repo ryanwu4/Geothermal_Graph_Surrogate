@@ -9,7 +9,8 @@ full NPV calculation in GeologicalSimulationWrapper.
 - Defined in preprocessing as discounted net energy revenue from annual field rates:
   - `net_energy_t = FieldEnergyProductionRate_t - FieldEnergyInjectionRate_t`
   - `revenue_t = net_energy_t * (ENERGY_PRICE / 3600.0)`
-  - `discount_t = (1 / (1 + DISCOUNT_FACTOR))^t`, `t = 1..T`
+  - `real_discount = (1 + NOMINAL_DISCOUNT_RATE) / (1 + INFLATION_RATE) - 1`
+  - `discount_t = (1 / (1 + real_discount))^t`, `t = 1..T`
   - `graph_discounted_net_revenue = sum_t(revenue_t * discount_t)`
 
 ## 2) Current Inference NPV Proxy (No Facility Terms, No Gate)
@@ -32,7 +33,8 @@ with:
 Variables aligned with GeologicalSimulationWrapper `ECONOMICS` keys:
 
 - `ENERGY_PRICE` (euros/kWh)
-- `DISCOUNT_FACTOR`
+- `NOMINAL_DISCOUNT_RATE`
+- `INFLATION_RATE`
 - `WELL_COST_PER_DISTANCE`
 - `OPEX_WATER_INJECTOR`
 - `OPEX_WATER_PRODUCER`

@@ -41,6 +41,7 @@ from compile_minimal_geothermal_h5 import (
     extract_vertical_profiles,
 )
 from preprocess_h5 import get_valid_mask, find_z_cutoff, PROPERTIES, PERM_PROPS
+from geothermal.economics import compute_real_discount_rate
 from geothermal.data import HeteroGraphScaler, build_single_hetero_data
 from geothermal.model import HeteroGNNRegressor
 
@@ -55,7 +56,8 @@ NPV_OBJECTIVE_LABEL = "NPV (No Facility Terms)"
 
 DEFAULT_NPV_TERMS = {
     # Surrogate and discounting assumptions
-    "DISCOUNT_FACTOR": 0.08,
+    "NOMINAL_DISCOUNT_RATE": 0.09,
+    "INFLATION_RATE": 0.02,
     "PLANNING_YEARS": 30,
     # Well CAPEX (no facility terms)
     "WELL_COST_PER_DISTANCE": 2500.0,
@@ -96,7 +98,6 @@ def load_npv_terms(config: dict) -> dict:
     npv_terms.update(config.get("npv_terms", {}))
 
     required = [
-        "DISCOUNT_FACTOR",
         "PLANNING_YEARS",
         "WELL_COST_PER_DISTANCE",
         "OPEX_WATER_INJECTOR",
@@ -111,8 +112,7 @@ def load_npv_terms(config: dict) -> dict:
     if missing:
         raise ValueError(f"Missing required NPV terms: {missing}")
 
-    if float(npv_terms["DISCOUNT_FACTOR"]) <= -1.0:
-        raise ValueError("DISCOUNT_FACTOR must be > -1.0")
+    npv_terms["REAL_DISCOUNT_RATE"] = compute_real_discount_rate(npv_terms)
 
     return npv_terms
 
@@ -451,10 +451,10 @@ def compute_npv_proxy(
 
     total_opex_annual = fixed_opex_annual + pumping_opex_annual
 
-    discount_factor = float(npv_terms["DISCOUNT_FACTOR"])
+    discount_rate = float(npv_terms["REAL_DISCOUNT_RATE"])
     planning_years = int(npv_terms["PLANNING_YEARS"])
     years = torch.arange(1, planning_years + 1, dtype=dtype, device=device)
-    discount_vector = (1.0 / (1.0 + discount_factor)) ** years
+    discount_vector = (1.0 / (1.0 + discount_rate)) ** years
     discounted_opex = total_opex_annual * discount_vector.sum()
 
     # NPV proxy with no OPERATED gate by request.

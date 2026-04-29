@@ -15,6 +15,10 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import HeteroData
 
 from geothermal.model import EDGE_TYPES, TP_PROFILE_STATS
+from geothermal.economics import (
+    discounted_revenue_from_rates,
+    resolve_real_discount_rate_from_attrs,
+)
 
 
 def _compute_discounted_net_revenue_from_group(group: h5py.Group) -> float:
@@ -32,15 +36,8 @@ def _compute_discounted_net_revenue_from_group(group: h5py.Group) -> float:
         raise KeyError(
             "Missing target_graph_discounted_net_revenue_energy_price_kwh in dataset attrs"
         )
-    if "target_graph_discounted_net_revenue_discount_factor" not in attrs:
-        raise KeyError(
-            "Missing target_graph_discounted_net_revenue_discount_factor in dataset attrs"
-        )
-
     energy_price_kwh = float(attrs["target_graph_discounted_net_revenue_energy_price_kwh"])
-    discount_factor = float(attrs["target_graph_discounted_net_revenue_discount_factor"])
-    if discount_factor <= -1.0:
-        raise ValueError(f"Invalid discount factor in dataset attrs: {discount_factor}")
+    discount_rate = resolve_real_discount_rate_from_attrs(attrs)
 
     prod = group["field_energy_production_rate"][:].astype(np.float64).reshape(-1)
     inj = group["field_energy_injection_rate"][:].astype(np.float64).reshape(-1)
@@ -49,11 +46,7 @@ def _compute_discounted_net_revenue_from_group(group: h5py.Group) -> float:
             f"Shape mismatch for production/injection rates: {prod.shape} vs {inj.shape}"
         )
 
-    energy_price_kj = energy_price_kwh / 3600.0
-    net = prod - inj
-    years = np.arange(1, len(net) + 1, dtype=np.float64)
-    discount = (1.0 / (1.0 + discount_factor)) ** years
-    return float(np.sum(net * energy_price_kj * discount))
+    return discounted_revenue_from_rates(prod, inj, energy_price_kwh, discount_rate)
 
 
 class PhysicsContext:

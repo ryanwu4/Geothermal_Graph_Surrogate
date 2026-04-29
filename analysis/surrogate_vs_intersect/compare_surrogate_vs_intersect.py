@@ -24,6 +24,11 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+from geothermal.economics import (
+    discounted_revenue_from_rates,
+    resolve_real_discount_rate_from_attrs,
+)
+
 CASE_RE = re.compile(r"_(?P<geo>\d+)_run(?P<run>\d+)$")
 
 MANIM_BG = "#000000"
@@ -200,19 +205,6 @@ def load_manifest_predictions(manifest_path: Path, repo_root: Path) -> tuple[lis
     return rows, run_to_wells, geology_info
 
 
-def discounted_revenue_from_rates(
-    prod_rate: np.ndarray,
-    inj_rate: np.ndarray,
-    energy_price_kwh: float,
-    discount_factor: float,
-) -> float:
-    prod = np.asarray(prod_rate, dtype=np.float64).reshape(-1)
-    inj = np.asarray(inj_rate, dtype=np.float64).reshape(-1)
-    net = prod - inj
-    years = np.arange(1, len(net) + 1, dtype=np.float64)
-    discount = (1.0 / (1.0 + discount_factor)) ** years
-    energy_price_kj = energy_price_kwh / 3600.0
-    return float(np.sum(net * energy_price_kj * discount))
 
 
 def load_intersect_actuals(h5_path: Path) -> dict[tuple[int, int], dict[str, float]]:
@@ -220,7 +212,7 @@ def load_intersect_actuals(h5_path: Path) -> dict[tuple[int, int], dict[str, flo
 
     with h5py.File(h5_path, "r") as h5:
         energy_price = float(h5.attrs.get("target_graph_discounted_net_revenue_energy_price_kwh", 0.0))
-        discount_factor = float(h5.attrs.get("target_graph_discounted_net_revenue_discount_factor", 0.0))
+        discount_rate = resolve_real_discount_rate_from_attrs(h5.attrs)
 
         for case_name in h5.keys():
             parsed = parse_case_name(case_name)
@@ -237,7 +229,7 @@ def load_intersect_actuals(h5_path: Path) -> dict[tuple[int, int], dict[str, flo
                     group["field_energy_production_rate"][:],
                     group["field_energy_injection_rate"][:],
                     energy_price,
-                    discount_factor,
+                    discount_rate,
                 )
 
             out[(geo, run)] = {
