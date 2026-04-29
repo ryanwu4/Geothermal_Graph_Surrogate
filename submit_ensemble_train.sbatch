@@ -4,8 +4,8 @@
 #SBATCH --error=/scratch/users/rwu4/geothermal_ensemble/logs/array_%A_%a.err
 #SBATCH --array=0-9%5
 #SBATCH --mem=48GB
-#SBATCH -c 8
-#SBATCH -t 12:00:00
+#SBATCH -c 4
+#SBATCH -t 3:00:00
 #SBATCH -p gpu
 #SBATCH --gpus 1
 #SBATCH -C GPU_SKU:L40S
