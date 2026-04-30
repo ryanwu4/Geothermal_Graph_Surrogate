@@ -1,0 +1,68 @@
+{
+    "geology_h5_file": "../data_test/v2.5_0111.h5",
+    "ensemble_dir": "../trained/ensemble_discountedrevenue",
+    "checkpoint_glob": "run_*/checkpoints/best-*.ckpt",
+    "scaler_filename": "scaler.pkl",
+    "primary_member": 0,
+    "revenue_target": "graph_discounted_net_revenue",
+    "norm_config": "../trained/norm_config.json",
+    "output_root": "inference_outputs/ensemble_active_learning",
+    "log_every_n_steps": 50,
+    "optimization_steps": 100,
+    "num_samples_N": 10,
+    "batch_size_M": 5,
+    "edge_buffer": 10,
+    "learning_rate": 0.5,
+    "optimization_objective": "primary",
+    "ucb_beta": 1.0,
+    "wells": [
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        },
+        {
+            "depth": 50,
+            "type": "injector"
+        },
+        {
+            "depth": 50,
+            "type": "producer"
+        }
+    ]
+}
