@@ -8,3 +8,4 @@ visualization/logs
 plots
 analysis/smallerModel.jld2
 inference/*_outputs
+analysis/timestep_comparison/*.h5
