@@ -175,7 +175,41 @@ def main() -> None:
         default=None,
         help="Path to precomputed SVD weights if edge-encoder is svd.",
     )
+    parser.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a Lightning .ckpt to warm-start from. When set, the "
+            "scaler from --scaler-path is reused and the model is initialized "
+            "via load_from_checkpoint instead of fresh weights."
+        ),
+    )
+    parser.add_argument(
+        "--scaler-path",
+        type=Path,
+        default=None,
+        help=(
+            "Pickle path of the HeteroGraphScaler to reuse with --checkpoint-path. "
+            "Required when --checkpoint-path is set; ensures inference and training "
+            "share the same normalization. Defaults to <ckpt-parent>/scaler.pkl."
+        ),
+    )
+    parser.add_argument(
+        "--max-epochs-finetune",
+        type=int,
+        default=None,
+        help=(
+            "If --checkpoint-path is set, override --max-epochs with this lower "
+            "cap for finetuning. Ignored when training from scratch."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.checkpoint_path is not None and args.scaler_path is None:
+        # Default to the scaler colocated with the checkpoint, matching how
+        # train.py saves it (see save block below).
+        args.scaler_path = args.checkpoint_path.parent / "scaler.pkl"
 
     prediction_level = (
         "node" if args.target in ("node_wept", "node_tp_final") else "graph"
@@ -251,11 +285,18 @@ def main() -> None:
     val_graphs_raw = [graphs_raw[i] for i in val_idx]
     test_graphs_raw = [graphs_raw[i] for i in test_idx]
 
-    scaler = HeteroGraphScaler(
-        whiten=not args.no_whiten,
-        pca_components=args.pca_components,
-    )
-    scaler.fit(train_graphs_raw)
+    if args.scaler_path is not None and args.checkpoint_path is not None:
+        # Warm-start: reuse the prior iteration's scaler so the new model sees
+        # inputs in the same normalized space its weights were trained on.
+        with open(args.scaler_path, "rb") as f:
+            scaler = pickle.load(f)
+        print(f"Loaded warm-start scaler from {args.scaler_path}")
+    else:
+        scaler = HeteroGraphScaler(
+            whiten=not args.no_whiten,
+            pca_components=args.pca_components,
+        )
+        scaler.fit(train_graphs_raw)
 
     train_graphs = [scaler.transform_graph(g) for g in train_graphs_raw]
     val_graphs = [scaler.transform_graph(g) for g in val_graphs_raw]
@@ -305,32 +346,40 @@ def main() -> None:
         pin_memory=not args.cache_to_gpu,
     )
 
-    model = HeteroGNNRegressor(
-        input_dim=input_dim,
-        global_dim=global_dim,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        pooling=args.pooling,
-        residual=not args.no_residual,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        loss=args.loss,
-        prediction_level=prediction_level,
-        output_dim=output_dim,
-        active_channels=[
-            "PermX",
-            "PermY",
-            "PermZ",
-            "Porosity",
-            "Temperature0",
-            "Pressure0",
-            "valid_mask",
-        ],
-        latent_edge_dim=32,
-        edge_encoder=args.edge_encoder,
-        svd_weights_path=str(args.svd_weights_path) if args.svd_weights_path else None,
-    )
+    if args.checkpoint_path is not None:
+        # PyTorch 2.6+ defaults weights_only=True; make pathlib safe to deserialize.
+        import pathlib as _pl
+        if hasattr(torch.serialization, "add_safe_globals"):
+            torch.serialization.add_safe_globals([_pl.PosixPath, _pl.WindowsPath])
+        model = HeteroGNNRegressor.load_from_checkpoint(str(args.checkpoint_path))
+        print(f"Warm-started model from {args.checkpoint_path}")
+    else:
+        model = HeteroGNNRegressor(
+            input_dim=input_dim,
+            global_dim=global_dim,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            pooling=args.pooling,
+            residual=not args.no_residual,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            loss=args.loss,
+            prediction_level=prediction_level,
+            output_dim=output_dim,
+            active_channels=[
+                "PermX",
+                "PermY",
+                "PermZ",
+                "Porosity",
+                "Temperature0",
+                "Pressure0",
+                "valid_mask",
+            ],
+            latent_edge_dim=32,
+            edge_encoder=args.edge_encoder,
+            svd_weights_path=str(args.svd_weights_path) if args.svd_weights_path else None,
+        )
 
     checkpoint_cb = ModelCheckpoint(
         monitor="val_loss",
@@ -351,8 +400,13 @@ def main() -> None:
     else:
         devices = [int(x.strip()) for x in args.gpu.split(",")]
 
+    epochs_for_run = args.max_epochs
+    if args.checkpoint_path is not None and args.max_epochs_finetune is not None:
+        epochs_for_run = args.max_epochs_finetune
+        print(f"Finetune cap: max_epochs={epochs_for_run}")
+
     trainer = L.Trainer(
-        max_epochs=args.max_epochs,
+        max_epochs=epochs_for_run,
         accelerator="gpu" if devices != "auto" else "auto",
         devices=devices,
         callbacks=[checkpoint_cb, early_stop_cb],
