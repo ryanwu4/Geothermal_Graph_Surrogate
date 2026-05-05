@@ -1,0 +1,8 @@
+{
+  "ENERGY_PRICE": 0.04,
+  "NOMINAL_DISCOUNT_RATE": 0.08,
+  "INFLATION_RATE": 0.0,
+  "SOURCE": "Copied from GeologicalSimulationWrapper ECONOMICS defaults",
+  "CURRENCY_NOTE": "ENERGY_PRICE is in currency per kWh; preprocessing converts to currency per kJ by dividing by 3600",
+  "OBJECTIVE_SCOPE": "graph_discounted_net_revenue excludes CAPEX and OPEX terms"
+}

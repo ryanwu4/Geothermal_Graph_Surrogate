@@ -9,3 +9,4 @@ plots
 analysis/smallerModel.jld2
 inference/*_outputs
 analysis/timestep_comparison/*.h5
+pre_patch_datasets
