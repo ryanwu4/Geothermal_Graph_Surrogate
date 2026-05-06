@@ -92,6 +92,12 @@ def main() -> None:
     scaler_path = Path(config.get("scaler_path"))
     if not scaler_path:
         raise ValueError("Missing 'scaler_path' in JSON configuration")
+    # Target is informational here — the loaded checkpoint determines what the
+    # model actually predicts. The variable names below (`predicted_energy`,
+    # `chunk_energy_hist`, `all_energy_tracks`) are historical from when this
+    # script only ran on the energy model; they hold whatever the checkpoint
+    # predicts (revenue, energy, etc).
+    target = config.get("target", "graph_discounted_net_revenue")
 
     geology_files = config.get("geology_h5_files", [config.get("geology_h5_file")])
     if not geology_files or geology_files[0] is None:
@@ -296,7 +302,7 @@ def main() -> None:
                     wells=wells,
                     physics_dict=p_ctx["physics_dict"],
                     full_shape=p_ctx["full_shape"],
-                    target="graph_energy_total",
+                    target=target,
                     target_val=0.0,
                     vertical_profile=vertical_profiles,
                     case_id=f"run{chunk_start+m_idx}_geo{k_idx}",

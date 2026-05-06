@@ -87,6 +87,10 @@ def main() -> None:
     scaler_path = Path(config.get("scaler_path"))
     if not scaler_path:
         raise ValueError("Missing 'scaler_path' in JSON configuration")
+    # Target is informational here — the loaded checkpoint determines what the
+    # model actually predicts. We thread this through to build_single_hetero_data
+    # so case_id / prediction_level metadata is consistent with the checkpoint.
+    target = config.get("target", "graph_discounted_net_revenue")
 
     geology_files = config.get("geology_h5_files", [config.get("geology_h5_file")])
     if not geology_files or geology_files[0] is None:
@@ -220,7 +224,7 @@ def main() -> None:
             wells=wells,
             physics_dict=physics_dict,
             full_shape=full_shape,
-            target="graph_energy_total",
+            target=target,
             target_val=0.0,
             vertical_profile=vertical_profiles,
             case_id=f"inference_custom_geo_{geo_idx}",
