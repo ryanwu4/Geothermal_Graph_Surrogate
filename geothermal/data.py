@@ -343,8 +343,6 @@ def load_hetero_graphs(
             physics_dict = {}
             for k in group["physics_tensors"].keys():
                 t = torch.tensor(group["physics_tensors"][k][:], dtype=torch.float32)
-                if torch.cuda.is_available():
-                    t = t.pin_memory()
                 physics_dict[k] = t
 
             # Full shape represents the active depth, X, Y
