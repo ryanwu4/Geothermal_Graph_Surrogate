@@ -215,42 +215,74 @@ class PhysicsSlabCNN(nn.Module):
     Modular 3D CNN Edge Feature Extractor.
     Takes [B, C, Z=16, X=32, Y=32] volumetric slabs, extracts feature vectors,
     injects delta_s (continuous Euclidean distance), and outputs a configured latent edge dimension.
+
+    Two opt-in changes (default off) mirror the v3 node-CNN fix that resolved geo 8 underfitting:
+      - `norm="groupnorm"` replaces BatchNorm3d with GroupNorm. BN normalizes across
+        the batch and strips inter-instance absolute-scale signal (e.g., "this geology's
+        PermZ is tiny") — fine for in-distribution learning but destroys the OOD-defining
+        signal for outlier geologies. GroupNorm normalizes per-instance only.
+      - `raw_means_bypass=True` concatenates per-channel slab means (computed pre-CNN,
+        never normalized) into the final MLP. Provides direct access to absolute-magnitude
+        signal regardless of normalization choice in the conv body.
     """
-    def __init__(self, 
-                 in_channels: int, 
-                 latent_dim: int = 32):
+    def __init__(self,
+                 in_channels: int,
+                 latent_dim: int = 32,
+                 norm: str = "batchnorm",
+                 raw_means_bypass: bool = False,
+                 activation: str = "relu"):
         super().__init__()
-        
+        assert norm in ("batchnorm", "groupnorm"), norm
+        assert activation in ("relu", "gelu"), activation
+        self.in_channels = in_channels
+        self.raw_means_bypass = raw_means_bypass
+
+        def _norm(c: int) -> nn.Module:
+            if norm == "groupnorm":
+                # 4 groups divides 8, 16, 32 evenly
+                return nn.GroupNorm(num_groups=4, num_channels=c)
+            return nn.BatchNorm3d(c)
+
+        def _act() -> nn.Module:
+            return nn.GELU() if activation == "gelu" else nn.ReLU(inplace=True)
+
         self.features = nn.Sequential(
             # Input: (in_channels, 16, 32, 32)
             nn.Conv3d(in_channels, 8, kernel_size=3, padding=1),
-            nn.BatchNorm3d(8),
-            nn.ReLU(inplace=True),
+            _norm(8),
+            _act(),
             nn.MaxPool3d(kernel_size=2, stride=2),
             # (8, 8, 16, 16)
-            
+
             nn.Conv3d(8, 16, kernel_size=3, padding=1),
-            nn.BatchNorm3d(16),
-            nn.ReLU(inplace=True),
+            _norm(16),
+            _act(),
             nn.MaxPool3d(kernel_size=2, stride=2),
             # (16, 4, 8, 8)
-            
+
             nn.Conv3d(16, 32, kernel_size=3, padding=1),
-            nn.BatchNorm3d(32),
-            nn.ReLU(inplace=True),
+            _norm(32),
+            _act(),
             nn.MaxPool3d(kernel_size=2, stride=2),
             # (32, 2, 4, 4)
-            
+
             nn.Conv3d(32, 32, kernel_size=3, padding=1),
-            nn.BatchNorm3d(32),
-            nn.ReLU(inplace=True),
+            _norm(32),
+            _act(),
             nn.AdaptiveAvgPool3d((1, 1, 1))
             # (32, 1, 1, 1)
         )
-        
-        # CNN flattened output (32) + Euclidean distance (1) -> latent_dim
+
+        # Optional bypass: 16-d projection of raw per-channel means.
+        if self.raw_means_bypass:
+            self.raw_proj = nn.Linear(in_channels, 16)
+            mlp_in = 32 + 1 + 16
+        else:
+            mlp_in = 32 + 1
+
+        # CNN flattened output (32) + Euclidean distance (1) [+ raw_means 16] -> latent_dim
         self.mlp = nn.Sequential(
-            nn.Linear(32 + 1, 32),
+            nn.Linear(mlp_in, 32),
             nn.GELU(),
             nn.Linear(32, latent_dim)
         )
@@ -259,25 +291,248 @@ class PhysicsSlabCNN(nn.Module):
         """
         Args:
             slabs: (B, C, Z, X, Y)
-            coords_a: (B, 3) 
+            coords_a: (B, 3)
             coords_b: (B, 3)
         Returns:
             edge_features: (B, latent_dim)
         """
         B = slabs.shape[0]
-        
+
         # 1. Volumetric Feature Extraction
-        cnn_out = self.features(slabs)  # (B, 128, 1, 1, 1)
-        cnn_flat = cnn_out.view(B, -1)   # (B, 128)
-        
+        cnn_out = self.features(slabs)  # (B, 32, 1, 1, 1)
+        cnn_flat = cnn_out.view(B, -1)   # (B, 32)
+
         # 2. Distance Injection
         delta_s = torch.sqrt(torch.sum((coords_a - coords_b)**2, dim=1, keepdim=True))  # (B, 1)
-        
-        # 3. Concatenate and Compress
-        concat_vec = torch.cat([cnn_flat, delta_s], dim=1)
-        edge_features = self.mlp(concat_vec)  # (B, latent_dim)
-        
+
+        parts = [cnn_flat, delta_s]
+        if self.raw_means_bypass:
+            raw_means = slabs.mean(dim=(2, 3, 4))         # (B, in_channels)
+            parts.append(self.raw_proj(raw_means))         # (B, 16)
+
+        edge_features = self.mlp(torch.cat(parts, dim=1))  # (B, latent_dim)
         return edge_features
+
+
+class ContinuousNodeCropper(nn.Module):
+    """Single-well variant of ContinuousCropper.
+
+    Extracts a (Z_out, 2P+1, 2P+1) box around a well's (x, y).
+    XY span is the well center +/- pad. Z span is either:
+      - "perforation": [perf_top, perf_bot]  (length varies per well; resampled to Z_out)
+      - "full":        [0, Z_len-1]           (consistent across wells; Z_out cells = full reservoir)
+    """
+
+    def __init__(self, pad: int = 3, z_out: int = 16, z_extent: str = "full"):
+        super().__init__()
+        assert z_extent in ("perforation", "full"), z_extent
+        self.pad = pad
+        self.z_out = z_out
+        self.z_extent = z_extent
+        self.out_shape = (z_out, 2 * pad + 1, 2 * pad + 1)
+
+    def forward(
+        self,
+        volumes: torch.Tensor,
+        well_xyz: torch.Tensor,
+        perf_range: torch.Tensor,
+        full_shape: tuple[int, int, int],
+    ) -> torch.Tensor:
+        """
+        Args:
+            volumes:     (B, C, Z, X, Y) — physics tensor expanded to batch size N_wells
+            well_xyz:    (B, 3) continuous (x, y, z) of each well
+            perf_range:  (B, 2) integer (perf_top, perf_bot) per well
+            full_shape:  (Z_len, X_len, Y_len)
+        Returns:
+            slab: (B, C, Z_out, 2P+1, 2P+1)
+        """
+        B, C, _, _, _ = volumes.shape
+        Z_len, X_len, Y_len = full_shape
+        dtype, device = volumes.dtype, volumes.device
+
+        well_x = well_xyz[:, 0]
+        well_y = well_xyz[:, 1]
+
+        pad = float(self.pad)
+        x_min = well_x - pad
+        x_max = well_x + pad
+        y_min = well_y - pad
+        y_max = well_y + pad
+        if self.z_extent == "full":
+            # Reservoir-wide Z — same physical resolution per slab voxel for every well.
+            z_min = torch.zeros(B, dtype=dtype, device=device)
+            z_max = torch.full((B,), float(Z_len - 1), dtype=dtype, device=device)
+        else:
+            z_min = perf_range[:, 0].to(dtype)
+            z_max = perf_range[:, 1].to(dtype)
+            # Ensure non-degenerate Z extent (e.g., n_layers == 1).
+            z_max = torch.where(z_max - z_min < 1.0, z_min + 1.0, z_max)
+
+        x_min_norm = (x_min / (X_len - 1)) * 2 - 1
+        x_max_norm = (x_max / (X_len - 1)) * 2 - 1
+        y_min_norm = (y_min / (Y_len - 1)) * 2 - 1
+        y_max_norm = (y_max / (Y_len - 1)) * 2 - 1
+        z_min_norm = (z_min / (Z_len - 1)) * 2 - 1
+        z_max_norm = (z_max / (Z_len - 1)) * 2 - 1
+
+        theta = torch.zeros((B, 3, 4), dtype=dtype, device=device)
+        # Same axis convention as ContinuousCropper:
+        #   row 0 -> grid_sample W (Y), row 1 -> grid_sample V (X), row 2 -> grid_sample U (Z)
+        theta[:, 0, 0] = (y_max_norm - y_min_norm) / 2
+        theta[:, 0, 3] = (y_max_norm + y_min_norm) / 2
+        theta[:, 1, 1] = (x_max_norm - x_min_norm) / 2
+        theta[:, 1, 3] = (x_max_norm + x_min_norm) / 2
+        theta[:, 2, 2] = (z_max_norm - z_min_norm) / 2
+        theta[:, 2, 3] = (z_max_norm + z_min_norm) / 2
+
+        grid = F.affine_grid(theta, size=(B, C, *self.out_shape), align_corners=True)
+        return F.grid_sample(volumes, grid, padding_mode="zeros", align_corners=True)
+
+
+class PhysicsNodeSlabExtractor(nn.Module):
+    """Assembles a node-slab input volume per well.
+
+    Channels (in order):
+      1..N_active: the named physics channels (e.g. PermX/Y/Z, Porosity, T0, P0, valid_mask)
+      last:        perforation mask — 1 along Z inside [perf_top, perf_bot] (in slab
+                   Z coordinates), 0 outside, broadcast across X/Y of the slab.
+
+    For z_extent="full" (default), the slab Z axis spans the full active reservoir
+    [0, Z_len-1] resampled to Z_out cells; the perforation mask carries the per-well
+    info. For z_extent="perforation", the slab Z axis is exactly the well's perforation
+    and the mask is 1 everywhere by construction.
+    """
+
+    def __init__(
+        self,
+        active_channels: list[str],
+        pad: int = 3,
+        z_out: int = 16,
+        z_extent: str = "full",
+    ):
+        super().__init__()
+        self.active_channels = active_channels
+        self.pad = pad
+        self.z_out = z_out
+        self.z_extent = z_extent
+        self.cropper = ContinuousNodeCropper(pad=pad, z_out=z_out, z_extent=z_extent)
+        self.in_channels = len(active_channels) + 1  # + perforation mask
+
+    @property
+    def out_shape(self) -> tuple[int, int, int]:
+        return self.cropper.out_shape
+
+    def _build_perf_mask(
+        self, perf_range: torch.Tensor, full_shape: tuple[int, int, int], dtype, device
+    ) -> torch.Tensor:
+        """Per-voxel perforation indicator at slab Z resolution.
+
+        For "full" z_extent the slab Z axis maps voxel z' in [0, Z_out-1] to reservoir
+        Z in [0, Z_len-1]; we mark voxels whose underlying Z falls inside [perf_top, perf_bot].
+        For "perforation" z_extent every slab voxel is perforated by construction.
+        """
+        B = perf_range.shape[0]
+        Z_out, X_out, Y_out = self.out_shape
+        if self.z_extent == "perforation":
+            return torch.ones((B, 1, Z_out, X_out, Y_out), dtype=dtype, device=device)
+        # z_extent == "full"
+        Z_len = full_shape[0]
+        # Slab Z voxel centers in reservoir Z coords (align_corners=True semantics).
+        z_axis = torch.linspace(0.0, float(Z_len - 1), Z_out, dtype=dtype, device=device)
+        perf_top = perf_range[:, 0].to(dtype).view(B, 1)
+        perf_bot = perf_range[:, 1].to(dtype).view(B, 1)
+        inside = ((z_axis.view(1, Z_out) >= perf_top) & (z_axis.view(1, Z_out) <= perf_bot)).to(dtype)
+        # Broadcast over X/Y
+        return inside.view(B, 1, Z_out, 1, 1).expand(B, 1, Z_out, X_out, Y_out)
+
+    def forward(
+        self,
+        volumes_dict: dict[str, torch.Tensor],
+        well_xyz: torch.Tensor,
+        perf_range: torch.Tensor,
+        full_shape: tuple[int, int, int],
+    ) -> torch.Tensor:
+        device = well_xyz.device
+        tensors = []
+        for ch in self.active_channels:
+            t = volumes_dict[ch].to(device, non_blocking=True)
+            if t.ndim == 4:  # (B, Z, X, Y) -> (B, 1, Z, X, Y)
+                t = t.unsqueeze(1)
+            tensors.append(t)
+        multi_vol = torch.cat(tensors, dim=1)  # (B, C_phys, Z, X, Y)
+
+        slab = self.cropper(multi_vol, well_xyz, perf_range, full_shape)
+        perf_mask = self._build_perf_mask(perf_range, full_shape, slab.dtype, slab.device)
+        return torch.cat([slab, perf_mask], dim=1)
+
+
+class PhysicsNodeSlabCNN(nn.Module):
+    """Small 3D CNN for per-node physics slabs.
+
+    Input shape: (B, in_channels, Z, 2P+1, 2P+1). For P=3 the XY extent is 7.
+
+    Design choices and the failure modes they target:
+      - **No XY pooling.** XY extent (7 at P=3) is small enough that pooling
+        destroys ~3/4 of lateral context. Conv3d keeps XY through every block.
+      - **Z-strided convolutions, no Z-pool.** Z is the long axis (16);
+        stride-2 conv halves it per block.
+      - **GroupNorm, NOT BatchNorm.** Diagnostic on the v2 model (BatchNorm3d
+        based) showed that BN strips absolute-scale signal across instances:
+        the CNN learned local-texture features but couldn't encode geology
+        identity (only 5.7% between-geology variance vs 22% for the hand-
+        engineered profile). GroupNorm normalizes within an instance only,
+        preserving inter-instance scale differences.
+      - **Raw per-channel slab means concatenated to the MLP.** Bypasses ALL
+        normalization for absolute-magnitude signal. Replicates the strongest
+        signal in the hand-engineered profile (channel-wise means over the
+        well column) while letting the CNN body learn spatial structure on top.
+      - **AdaptiveAvg + AdaptiveMax** at the final pool to preserve both
+        first-moment and extreme-value statistics from the spatial features.
+    """
+
+    def __init__(self, in_channels: int, latent_dim: int = 32, activation: str = "relu"):
+        super().__init__()
+        assert activation in ("relu", "gelu"), activation
+        self.in_channels = in_channels
+        # GroupNorm groups: use 4 to avoid edge cases with non-power-of-2 channels.
+        ng = 4
+
+        def _act() -> nn.Module:
+            return nn.GELU() if activation == "gelu" else nn.ReLU(inplace=True)
+
+        self.features = nn.Sequential(
+            nn.Conv3d(in_channels, 16, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=ng, num_channels=16),
+            _act(),
+            nn.Conv3d(16, 32, kernel_size=3, padding=1, stride=(2, 1, 1)),
+            nn.GroupNorm(num_groups=ng, num_channels=32),
+            _act(),
+            nn.Conv3d(32, 32, kernel_size=3, padding=1, stride=(2, 1, 1)),
+            nn.GroupNorm(num_groups=ng, num_channels=32),
+            _act(),
+        )
+        self.avg_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        self.max_pool = nn.AdaptiveMaxPool3d((1, 1, 1))
+        # Raw-channel-mean bypass: projects per-channel slab means into a
+        # supplementary feature without ever passing them through a norm layer.
+        self.raw_proj = nn.Linear(in_channels, 16)
+        self.mlp = nn.Sequential(
+            nn.Linear(32 + 32 + 16, 32),
+            nn.GELU(),
+            nn.Linear(32, latent_dim),
+        )
+
+    def forward(self, slabs: torch.Tensor) -> torch.Tensor:
+        B = slabs.shape[0]
+        # Raw per-channel means over (Z, X, Y) — absolute-scale signal that
+        # the GroupNorm'd CNN body would otherwise lose at training time.
+        raw_means = slabs.mean(dim=(2, 3, 4))  # (B, in_channels)
+        raw_feat = self.raw_proj(raw_means)    # (B, 16)
+        feat = self.features(slabs)
+        avg = self.avg_pool(feat).view(B, -1)  # (B, 32)
+        mx = self.max_pool(feat).view(B, -1)   # (B, 32)
+        return self.mlp(torch.cat([avg, mx, raw_feat], dim=1))
 
 
 class PhysicsSlabSVD(nn.Module):

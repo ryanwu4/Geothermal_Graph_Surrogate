@@ -69,6 +69,19 @@ class PhysicsContext:
 ABLATION_GROUPS = {
     "base_perm": {"type": "node", "cols": [2, 3, 4]},
     "base_thermo": {"type": "node", "cols": [6, 7]},
+    # Profile-only ablations (cols 8..32). Each group zeros a slice of the 25-d
+    # well_vertical_profile to isolate which features carry signal. Profile stat
+    # order per property is (mean, min, max, std).
+    "remove_perm_profile":   {"type": "node", "cols": list(range(8, 20))},   # PermX/Y/Z stats
+    "remove_poro_profile":   {"type": "node", "cols": list(range(20, 24))},  # Porosity stats
+    "remove_thermo_profile": {"type": "node", "cols": list(range(24, 32))},  # T0/P0 stats
+    # Stat-axis ablations: zero stats that are NOT the named kind, keep only that kind.
+    "keep_only_means":   {"type": "node", "cols": [9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 23, 25, 26, 27, 29, 30, 31]},
+    "keep_only_extrema": {"type": "node", "cols": [8, 12, 16, 20, 24, 28, 11, 15, 19, 23, 27, 31]},
+    "keep_only_std":     {"type": "node", "cols": [8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30]},
+    # Whole-profile sweeps
+    "keep_only_n_layers": {"type": "node", "cols": list(range(8, 32))},  # zero all 24 stat cols, keep col 32
+    "remove_all_profile": {"type": "node", "cols": list(range(8, 33))},  # zero entire profile incl. n_layers
 }
 
 
@@ -127,6 +140,8 @@ class HeteroGraphScaler:
         transformed["well"].pos_xy = graph["well"].pos_xy
         transformed["well"].pos_xyz = graph["well"].pos_xyz
         transformed["well"].is_injector = graph["well"].is_injector
+        if hasattr(graph["well"], "perf_range"):
+            transformed["well"].perf_range = graph["well"].perf_range
 
         for edge_type in EDGE_TYPES:
             transformed[edge_type].edge_index = graph[edge_type].edge_index
@@ -166,6 +181,8 @@ def build_single_hetero_data(
     tp_t1: np.ndarray | None = None,
     well_wept: np.ndarray | None = None,
     case_id: str = "infer",
+    node_encoder: str = "profile",
+    enrich_global_attr: bool = False,
 ) -> HeteroData:
     n_wells = len(wells)
 
@@ -182,12 +199,39 @@ def build_single_hetero_data(
 
     is_injector = (inj_rate > 0).astype(np.float32)
 
-    # Node features (8 base + 25 vertical profile = 33 dimensions)
-    base_features = np.stack(
-        [inj_rate, depth, perm_x, perm_y, perm_z, porosity, temp0, press0],
-        axis=1,
-    )
-    node_features = np.concatenate([base_features, vertical_profile], axis=1)
+    # Per-well perforation range (z_top, z_bot inclusive). vertical_profile[:, 24]
+    # is n_layers (set by extract_vertical_profiles in compile_minimal_geothermal_h5.py).
+    # depth from wells is the BOTTOM Z index of the perforation; perf_top is derived.
+    n_layers_i = vertical_profile[:, 24].astype(np.int64)
+    depth_idx = wells["depth"].astype(np.int64)
+    perf_top_i = np.maximum(0, depth_idx - n_layers_i + 1)
+    perf_bot_i = depth_idx
+    perf_range = np.stack([perf_top_i, perf_bot_i], axis=1).astype(np.int64)
+    n_layers = n_layers_i.astype(np.float32)
+    perf_top = perf_top_i.astype(np.float32)
+
+    # Node features:
+    #   node_encoder == "profile" -> 8 base + 25 vertical_profile = 33 dims (legacy)
+    #   node_encoder == "cnn"     -> 9 base scalars: [inj_rate, perf_top, perm_x, perm_y,
+    #                                perm_z, porosity, temp0, press0, n_layers].
+    #     `depth` (well bottom Z) is replaced by `perf_top` so depth=0 means well at
+    #     reservoir surface; n_layers is appended because the slab CNN cannot recover it
+    #     (slab Z axis is resampled to exactly span [perf_top, perf_bot] regardless of length).
+    #   node_encoder == "hybrid"  -> 8 base + 25 vertical_profile = 33 dims, same as
+    #     'profile' mode. The model also runs the node CNN at forward time and
+    #     concatenates its embedding to these features.
+    if node_encoder == "cnn":
+        node_features = np.stack(
+            [inj_rate, perf_top, perm_x, perm_y, perm_z, porosity, temp0, press0, n_layers],
+            axis=1,
+        )
+    else:
+        # both "profile" and "hybrid" use the same 33-d feature vector here
+        base_features = np.stack(
+            [inj_rate, depth, perm_x, perm_y, perm_z, porosity, temp0, press0],
+            axis=1,
+        )
+        node_features = np.concatenate([base_features, vertical_profile], axis=1)
 
     pos_xy = np.stack([x, y], axis=1)
     pos_xyz = np.stack([x, y, depth], axis=1)
@@ -197,6 +241,7 @@ def build_single_hetero_data(
     data["well"].pos_xy = torch.tensor(pos_xy, dtype=torch.float32)
     data["well"].pos_xyz = torch.tensor(pos_xyz, dtype=torch.float32)
     data["well"].is_injector = torch.tensor(is_injector, dtype=torch.float32)
+    data["well"].perf_range = torch.tensor(perf_range, dtype=torch.long)
     data.physics_context = PhysicsContext(physics_dict, full_shape)
 
     # K-NN topology based on 3D continuous distance
@@ -255,8 +300,33 @@ def build_single_hetero_data(
         for etype in EDGE_TYPES:
             data[etype].edge_index = torch.empty((2, 0), dtype=torch.long)
 
-    # Global features: well count
-    data.global_attr = torch.tensor([n_wells], dtype=torch.float32).unsqueeze(0)
+    # Global features. By default just well count (1-d, legacy behaviour).
+    # If enrich_global_attr is set, additionally compute reservoir-mean physics
+    # statistics from the physics tensor — these are constant per geology and
+    # give the head a direct geology fingerprint (especially geo 8's tight
+    # reservoir signature) without going through the GNN message-passing.
+    if enrich_global_attr:
+        valid_mask = physics_dict["valid_mask"].numpy() > 0.5
+        def _mean_active(key: str) -> float:
+            vals = physics_dict[key].numpy()
+            v = vals[valid_mask]
+            return float(np.mean(v)) if v.size else 0.0
+        permx_mean = _mean_active("PermX")
+        permz_mean = _mean_active("PermZ")
+        anisotropy = permz_mean / max(permx_mean, 1e-6)
+        global_vec = [
+            float(n_wells),
+            _mean_active("PermX"),
+            _mean_active("PermY"),
+            _mean_active("PermZ"),
+            _mean_active("Porosity"),
+            _mean_active("Temperature0"),
+            _mean_active("Pressure0"),
+            anisotropy,
+        ]
+        data.global_attr = torch.tensor(global_vec, dtype=torch.float32).unsqueeze(0)
+    else:
+        data.global_attr = torch.tensor([n_wells], dtype=torch.float32).unsqueeze(0)
 
     # Target mapping
     if target == "node_tp_final":
@@ -280,6 +350,8 @@ def load_hetero_graphs(
     h5_path: Path,
     target: str = "graph_energy_total",
     max_cases: int | None = None,
+    node_encoder: str = "profile",
+    enrich_global_attr: bool = False,
 ) -> tuple[list[HeteroData], np.ndarray]:
     graphs: list[HeteroData] = []
     all_targets: list[float] = []
@@ -362,6 +434,8 @@ def load_hetero_graphs(
                 tp_t1=tp_t1,
                 well_wept=well_wept,
                 case_id=case_id,
+                node_encoder=node_encoder,
+                enrich_global_attr=enrich_global_attr,
             )
 
             graphs.append(data)
@@ -398,7 +472,16 @@ def split_indices_stratified(
     test_fraction: float,
     seed: int,
     n_bins: int = 8,
+    geology_indices: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Stratified split.
+
+    If `geology_indices` is supplied, the stratification label is
+    ``geology_index * n_bins + target_bin`` so each (geology, target-decile)
+    cell gets proportional train/val/test counts. This keeps geo 8 (the
+    OOD outlier with ~3-5 test samples under target-only stratification)
+    properly represented in held-out splits.
+    """
     n_samples = len(targets)
     all_idx = np.arange(n_samples)
 
@@ -415,24 +498,71 @@ def split_indices_stratified(
         )
         return train_idx, val_idx, test_idx
 
-    strat_labels = np.digitize(targets, edges[1:-1], right=False)
-    train_val_idx, test_idx = train_test_split(
-        all_idx,
-        test_size=test_fraction,
-        random_state=seed,
-        shuffle=True,
-        stratify=strat_labels,
-    )
+    target_bins = np.digitize(targets, edges[1:-1], right=False)
+
+    def _safe_strat(labels: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+        """Sklearn requires every class >= 2. Merge any class with < 2 members
+        into ``fallback`` (broadcast) iteratively until safe; if even fallback
+        leaves rare classes, return None to disable stratification."""
+        labels = labels.astype(np.int64).copy()
+        for _ in range(3):  # up to 3 merge rounds
+            unique, counts = np.unique(labels, return_counts=True)
+            rare = unique[counts < 2]
+            if rare.size == 0:
+                return labels
+            labels = np.where(np.isin(labels, rare), fallback, labels)
+        # Last resort: pure fallback.
+        unique, counts = np.unique(fallback, return_counts=True)
+        return fallback if counts.min() >= 2 else None  # type: ignore[return-value]
+
+    if geology_indices is not None:
+        geology_indices = np.asarray(geology_indices, dtype=np.int64)
+        if geology_indices.shape != targets.shape:
+            raise ValueError(
+                f"geology_indices shape {geology_indices.shape} must match targets {targets.shape}"
+            )
+        # Prefer geology as the primary stratification key: with 1000 cases / 15
+        # geologies each geology has 50-200 cases, easily splittable. The joint
+        # (geology, target_bin) product creates rare cells we'd have to merge.
+        strat_labels = _safe_strat(geology_indices, fallback=geology_indices)
+    else:
+        strat_labels = _safe_strat(target_bins, fallback=target_bins)
+
+    if strat_labels is None:
+        # Falls back to non-stratified random split.
+        train_val_idx, test_idx = train_test_split(
+            all_idx, test_size=test_fraction, random_state=seed, shuffle=True
+        )
+    else:
+        train_val_idx, test_idx = train_test_split(
+            all_idx,
+            test_size=test_fraction,
+            random_state=seed,
+            shuffle=True,
+            stratify=strat_labels,
+        )
 
     val_rel = val_fraction / (1.0 - test_fraction)
-    train_val_labels = strat_labels[train_val_idx]
-    train_idx, val_idx = train_test_split(
-        train_val_idx,
-        test_size=val_rel,
-        random_state=seed,
-        shuffle=True,
-        stratify=train_val_labels,
-    )
+    if strat_labels is None:
+        train_idx, val_idx = train_test_split(
+            train_val_idx, test_size=val_rel, random_state=seed, shuffle=True
+        )
+    else:
+        train_val_labels = strat_labels[train_val_idx]
+        # Re-safe in case the inner pool has any newly-rare classes.
+        train_val_labels_safe = _safe_strat(train_val_labels, fallback=train_val_labels)
+        if train_val_labels_safe is None:
+            train_idx, val_idx = train_test_split(
+                train_val_idx, test_size=val_rel, random_state=seed, shuffle=True
+            )
+        else:
+            train_idx, val_idx = train_test_split(
+                train_val_idx,
+                test_size=val_rel,
+                random_state=seed,
+                shuffle=True,
+                stratify=train_val_labels_safe,
+            )
     return train_idx, val_idx, test_idx
 
 

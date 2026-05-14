@@ -9,7 +9,13 @@ import torch
 import lightning as L
 from torch import nn
 from torch_geometric.data import HeteroData
-from geothermal.physics_slab import PhysicsSlabExtractor, PhysicsSlabCNN, PhysicsSlabSVD
+from geothermal.physics_slab import (
+    PhysicsSlabExtractor,
+    PhysicsSlabCNN,
+    PhysicsSlabSVD,
+    PhysicsNodeSlabExtractor,
+    PhysicsNodeSlabCNN,
+)
 from torch_geometric.nn import (
     BatchNorm,
     NNConv,
@@ -74,6 +80,16 @@ class HeteroGNNRegressor(L.LightningModule):
         latent_edge_dim: int = 32,
         edge_encoder: str = "cnn",
         svd_weights_path: str | None = None,
+        edge_norm: str = "batchnorm",
+        edge_raw_means: bool = False,
+        node_encoder: str = "profile",
+        latent_node_dim: int = 32,
+        node_pad: int = 3,
+        node_z_out: int = 16,
+        node_z_extent: str = "full",
+        node_aggr: str = "mean",
+        cnn_activation: str = "relu",
+        head_no_norm: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -84,11 +100,33 @@ class HeteroGNNRegressor(L.LightningModule):
         self.output_dim = output_dim
         self.prediction_level = prediction_level
         self.latent_edge_dim = latent_edge_dim
+        self.node_encoder = node_encoder
+        self.latent_node_dim = latent_node_dim
+        self.node_active_channels = list(active_channels)
+
+        # 'hybrid' = profile (33-d node features) PLUS node CNN, concatenated at forward.
+        # 'cnn' = node CNN only (9-d base scalars + CNN embedding).
+        if node_encoder in ("cnn", "hybrid"):
+            self.node_slab_extractor = PhysicsNodeSlabExtractor(
+                active_channels=active_channels,
+                pad=node_pad,
+                z_out=node_z_out,
+                z_extent=node_z_extent,
+            )
+            self.node_cnn = PhysicsNodeSlabCNN(
+                in_channels=self.node_slab_extractor.in_channels,
+                latent_dim=latent_node_dim,
+                activation=cnn_activation,
+            )
 
         self.slab_extractor = PhysicsSlabExtractor(active_channels=active_channels)
         if edge_encoder == "cnn":
             self.edge_cnn = PhysicsSlabCNN(
-                in_channels=len(active_channels) + 2, latent_dim=self.latent_edge_dim
+                in_channels=len(active_channels) + 2,
+                latent_dim=self.latent_edge_dim,
+                norm=edge_norm,
+                raw_means_bypass=edge_raw_means,
+                activation=cnn_activation,
             )
         elif edge_encoder == "svd":
             if svd_weights_path is None:
@@ -120,7 +158,7 @@ class HeteroGNNRegressor(L.LightningModule):
                     in_channels=in_dim,
                     out_channels=hidden_dim,
                     nn=nn_edge,
-                    aggr="mean",
+                    aggr=node_aggr,
                     root_weight=True,
                 )
             self.convs.append(HeteroConv(conv_dict, aggr="sum"))
@@ -134,20 +172,26 @@ class HeteroGNNRegressor(L.LightningModule):
         self.activation = nn.GELU()
         self.dropout_layer = nn.Dropout(dropout)
 
+        def _maybe_ln(dim: int) -> nn.Module:
+            # Diagnostic from the BN→GN audit: LayerNorm inside the head re-normalizes
+            # the pool-concat embedding and partially undoes the absolute-scale signal
+            # that sum-pool carries. --head-no-norm strips these to keep that signal.
+            return nn.Identity() if head_no_norm else nn.LayerNorm(dim)
+
         if prediction_level == "graph":
             pool_dim = 3 * hidden_dim
             head_input_dim = pool_dim + global_dim
             self.head = nn.Sequential(
                 nn.Linear(head_input_dim, hidden_dim * 2),
-                nn.LayerNorm(hidden_dim * 2),
+                _maybe_ln(hidden_dim * 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim * 2, hidden_dim),
-                nn.LayerNorm(hidden_dim),
+                _maybe_ln(hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, hidden_dim // 2),
-                nn.LayerNorm(hidden_dim // 2),
+                _maybe_ln(hidden_dim // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim // 2, hidden_dim // 4),
@@ -157,11 +201,11 @@ class HeteroGNNRegressor(L.LightningModule):
         else:
             self.head = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
+                _maybe_ln(hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, hidden_dim // 2),
-                nn.LayerNorm(hidden_dim // 2),
+                _maybe_ln(hidden_dim // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim // 2, hidden_dim // 4),
@@ -230,12 +274,39 @@ class HeteroGNNRegressor(L.LightningModule):
 
             edge_attr_dict[edge_type] = final_attr
 
-        x_dict = {"well": batch["well"].x}
         edge_index_dict = {
             edge_type: batch[edge_type].edge_index for edge_type in EDGE_TYPES
         }
 
-        x = x_dict["well"]
+        if self.node_encoder in ("cnn", "hybrid"):
+            # Per-graph node embedding pass (mirrors edge-extraction loop above).
+            N_total = batch["well"].x.shape[0]
+            node_emb = torch.empty(
+                (N_total, self.latent_node_dim), device=self.device
+            )
+            well_batch = batch["well"].batch
+            for i in range(batch.num_graphs):
+                node_mask = well_batch == i
+                n_wells_i = int(node_mask.sum().item())
+                if n_wells_i == 0:
+                    continue
+                pos_xyz_i = batch["well"].pos_xyz[node_mask]
+                perf_range_i = batch["well"].perf_range[node_mask]
+
+                phys_ctx = batch.physics_context[i]
+                phys_dict = phys_ctx.d
+                full_shape = phys_ctx.full_shape
+                phys_expanded = {
+                    k: v.unsqueeze(0).expand(n_wells_i, -1, -1, -1)
+                    for k, v in phys_dict.items()
+                }
+                node_slabs = self.node_slab_extractor(
+                    phys_expanded, pos_xyz_i, perf_range_i, full_shape
+                )
+                node_emb[node_mask] = self.node_cnn(node_slabs)
+            x = torch.cat([batch["well"].x, node_emb], dim=1)
+        else:
+            x = batch["well"].x
 
         for idx, (conv, norm) in enumerate(zip(self.convs, self.norms)):
             x_in = x

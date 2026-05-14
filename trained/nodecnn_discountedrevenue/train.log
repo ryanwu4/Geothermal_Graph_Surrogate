@@ -1,0 +1,69 @@
+Seed set to 42
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+💡 Tip: For seamless cloud logging and experiment tracking, try installing [litlogger](https://pypi.org/project/litlogger/) to enable LitLogger, which logs metrics and artifacts automatically to the Lightning Experiments platform.
+/home/rwu4/miniconda3/envs/geothermal-pomdp/lib/python3.11/site-packages/lightning/fabric/loggers/csv_logs.py:268: Experiment logs directory trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00 exists and is not empty. Previous log files in this directory will be deleted when the new ones are saved!
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0,1]
+Skipped 1 cases with 0 wells.
+Prediction mode: graph_discounted_net_revenue (level=graph)
+Loaded 2676 hetero graphs from compiled_CNN_patched.h5
+Target range: min=162157232.0000, max=507660512.0000
+Node feature dimension after scaling/whitening: 41
+Global feature dimension: 8
+Split sizes: train=1872, val=402, test=402
+Caching entire dataset directly to GPU (cuda:0) VRAM...
+Set num_workers=0 to support native CUDA dataset persistence.
+┏━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃    ┃ Name                ┃ Type                     ┃ Params ┃ Mode  ┃ FLOPs ┃
+┡━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ 0  │ node_slab_extractor │ PhysicsNodeSlabExtractor │      0 │ train │     0 │
+│ 1  │ node_cnn            │ PhysicsNodeSlabCNN       │ 49.0 K │ train │     0 │
+│ 2  │ slab_extractor      │ PhysicsSlabExtractor     │      0 │ train │     0 │
+│ 3  │ edge_cnn            │ PhysicsSlabCNN           │ 50.0 K │ train │     0 │
+│ 4  │ convs               │ ModuleList               │  326 K │ train │     0 │
+│ 5  │ norms               │ ModuleList               │    128 │ train │     0 │
+│ 6  │ residual_proj       │ ModuleList               │  1.3 K │ train │     0 │
+│ 7  │ activation          │ GELU                     │      0 │ train │     0 │
+│ 8  │ dropout_layer       │ Dropout                  │      0 │ train │     0 │
+│ 9  │ head                │ Sequential               │  9.7 K │ train │     0 │
+│ 10 │ loss_fn             │ MSELoss                  │      0 │ train │     0 │
+└────┴─────────────────────┴──────────────────────────┴────────┴───────┴───────┘
+Trainable params: 436 K                                                         
+Non-trainable params: 0                                                         
+Total params: 436 K                                                             
+Total estimated model params size (MB): 1                                       
+Modules in train mode: 139                                                      
+Modules in eval mode: 0                                                         
+Total FLOPs: 0                                                                  
+/home/rwu4/miniconda3/envs/geothermal-pomdp/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/home/rwu4/miniconda3/envs/geothermal-pomdp/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:434: The 'val_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=127` in the `DataLoader` to improve performance.
+/home/rwu4/miniconda3/envs/geothermal-pomdp/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:434: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=127` in the `DataLoader` to improve performance.
+Epoch 96/179 ━━━━━━━━━━━━━━━━ 117/117 0:00:38 •       3.00it/s v_num: n_00      
+                                      0:00:00                  val_loss: 0.091  
+                                                               train_loss: 0.005
+Best checkpoint: /home/rwu4/omv_geothermal/Geothermal_Graph_Surrogate/trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/checkpoints/best-epoch=066-val_loss=0.0873.ckpt
+Saved scaler: /home/rwu4/omv_geothermal/Geothermal_Graph_Surrogate/trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/checkpoints/scaler.pkl
+
+Metrics in original target units:
+  train | MAE= 3116579.8 | MedAE= 2588736.0 | RMSE= 4000026.2 | MAPE=  0.8% | R2=0.9909
+Saved predictions: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/train_predictions.csv
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/train_highest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/train_lowest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/train_highest_error_graph_xy.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/train_lowest_error_graph_xy.png
+  val   | MAE= 9141087.0 | MedAE= 6655056.0 | RMSE=12385686.3 | MAPE=  2.5% | R2=0.9061
+Saved predictions: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/val_predictions.csv
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/val_highest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/val_lowest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/val_highest_error_graph_xy.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/val_lowest_error_graph_xy.png
+  test  | MAE=10638965.0 | MedAE= 7977848.0 | RMSE=14525498.9 | MAPE=  2.9% | R2=0.8870
+Saved predictions: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/test_predictions.csv
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/test_highest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/test_lowest_error_cases.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/test_highest_error_graph_xy.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/test_lowest_error_graph_xy.png
+Saved plot: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/combined_prediction_error_dists.png
+Saved metrics text summary: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/metrics_summary.txt
+Saved metrics JSON summary: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/metrics_summary.json
+Saved metric tracking curves: trained/v3_edgegn_globattr_compiled_CNN_patched/geothermal_hetero_gnn/run_00/plots/loss_over_time.png

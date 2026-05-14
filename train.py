@@ -109,7 +109,7 @@ def main() -> None:
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--loss", choices=["mse", "huber"], default="huber")
+    parser.add_argument("--loss", choices=["mse", "huber"], default="mse")
     parser.add_argument("--no-whiten", action="store_true")
     parser.add_argument("--pca-components", type=int, default=None)
     parser.add_argument("--no-residual", action="store_true")
@@ -204,6 +204,90 @@ def main() -> None:
             "cap for finetuning. Ignored when training from scratch."
         ),
     )
+    parser.add_argument(
+        "--node-encoder",
+        choices=["profile", "cnn", "hybrid"],
+        default="cnn",
+        help=(
+            "How per-well node embeddings are produced. 'profile' uses the 25-d "
+            "hand-coded well_vertical_profile (legacy, 33-d node features). 'cnn' "
+            "replaces the profile with a learned 3D CNN over a physics slab around "
+            "each well (9-d base scalars + latent_node_dim from the CNN). 'hybrid' "
+            "keeps the 33-d profile AND concatenates the CNN embedding (33 + latent)."
+        ),
+    )
+    parser.add_argument(
+        "--edge-norm",
+        choices=["batchnorm", "groupnorm"],
+        default="groupnorm",
+        help=(
+            "Normalization layer inside the edge PhysicsSlabCNN. Default 'batchnorm' "
+            "matches the existing behaviour. 'groupnorm' preserves per-instance "
+            "absolute-scale signal (analogous to the v3 node-CNN fix)."
+        ),
+    )
+    parser.add_argument(
+        "--edge-raw-means",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If set, the edge CNN MLP receives a 16-d projection of per-channel slab "
+            "means computed pre-CNN (never normalized). Analogous to the node-CNN raw-means "
+            "bypass; targets the same absolute-scale loss BatchNorm would otherwise cause. "
+            "(use --no-edge-raw-means to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--node-pad",
+        type=int,
+        default=3,
+        help="XY pad (P) for per-node slab when --node-encoder cnn; slab XY extent is 2P+1.",
+    )
+    parser.add_argument(
+        "--latent-node-dim",
+        type=int,
+        default=32,
+        help="Dimension of the per-node CNN embedding when --node-encoder cnn.",
+    )
+    parser.add_argument(
+        "--node-z-extent",
+        choices=["full", "perforation"],
+        default="full",
+        help=(
+            "Z range of the per-node slab. 'full' covers the active reservoir for every "
+            "well (consistent physical Z resolution; perforation mask carries per-well info). "
+            "'perforation' resamples only the well's perforation cells (variable physical "
+            "resolution; legacy behaviour)."
+        ),
+    )
+    parser.add_argument(
+        "--enrich-global-attr",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use an 8-d global_attr including reservoir-mean physics stats (PermX/Y/Z, "
+            "Porosity, T0, P0 means + anisotropy ratio) instead of just n_wells. Gives "
+            "the head a direct geology fingerprint without going through the GNN. "
+            "(use --no-enrich-global-attr to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--node-aggr",
+        choices=["mean", "sum"],
+        default="mean",
+        help="NNConv aggregation operator. 'sum' preserves absolute message magnitudes.",
+    )
+    parser.add_argument(
+        "--cnn-activation",
+        choices=["relu", "gelu"],
+        default="relu",
+        help="Activation inside the slab CNNs (edge + node). Default ReLU matches existing.",
+    )
+    parser.add_argument(
+        "--head-no-norm",
+        action="store_true",
+        help="Drop the LayerNorm layers inside the graph-prediction head.",
+    )
     args = parser.parse_args()
 
     if args.checkpoint_path is not None and args.scaler_path is None:
@@ -226,8 +310,14 @@ def main() -> None:
     # Lightning's seed_everything(workers=True) strictly forces determinism causing a crash.
     torch.use_deterministic_algorithms(False, warn_only=True)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    # Enable TF32 for matmuls on Ampere+ GPUs (~2x throughput, no accuracy hit on
+    # this surrogate). Lightning prints a warning when this is unset.
+    torch.set_float32_matmul_precision("high")
 
-    graphs_raw, targets = load_hetero_graphs(args.h5_path, target=args.target)
+    graphs_raw, targets = load_hetero_graphs(
+        args.h5_path, target=args.target, node_encoder=args.node_encoder,
+        enrich_global_attr=args.enrich_global_attr,
+    )
 
     print(f"Prediction mode: {args.target} (level={prediction_level})")
 
@@ -257,11 +347,36 @@ def main() -> None:
         apply_ablation(graphs_raw, args.ablate)
 
     if args.stratified_split:
+        # Try to load the case_id -> geology_index map adjacent to the H5 to
+        # enable geology-aware stratification. Falls back to target-only.
+        geology_indices = None
+        geo_map_candidates = [
+            args.h5_path.parent / "case_geology_map.json",
+        ]
+        for cand in geo_map_candidates:
+            if cand.exists():
+                try:
+                    with open(cand) as f:
+                        gmap = json.load(f)
+                    case_ids = [g.case_id for g in graphs_raw]
+                    if all(cid in gmap for cid in case_ids):
+                        geology_indices = np.array(
+                            [int(gmap[cid]["geology_index"]) for cid in case_ids],
+                            dtype=np.int64,
+                        )
+                        print(f"Loaded geology map for stratification from {cand}")
+                    else:
+                        n_miss = sum(1 for cid in case_ids if cid not in gmap)
+                        print(f"WARN: geology map at {cand} missing {n_miss}/{len(case_ids)} case_ids; falling back to target-only stratification")
+                except Exception as e:
+                    print(f"WARN: could not load {cand}: {e}; falling back to target-only stratification")
+                break
         train_idx, val_idx, test_idx = split_indices_stratified(
             targets=targets,
             val_fraction=args.val_fraction,
             test_fraction=args.test_fraction,
             seed=split_seed,
+            geology_indices=geology_indices,
         )
     else:
         train_val_idx, test_idx = train_test_split(
@@ -302,7 +417,15 @@ def main() -> None:
     val_graphs = [scaler.transform_graph(g) for g in val_graphs_raw]
     test_graphs = [scaler.transform_graph(g) for g in test_graphs_raw]
 
-    input_dim = train_graphs[0]["well"].x.shape[1]
+    # Node feature width going into the first NNConv:
+    #   profile -> 33 (8 base + 25 profile)
+    #   cnn     -> 9 + latent_node_dim
+    #   hybrid  -> 33 + latent_node_dim (profile features + CNN embedding)
+    base_node_dim = train_graphs[0]["well"].x.shape[1]
+    if args.node_encoder in ("cnn", "hybrid"):
+        input_dim = base_node_dim + args.latent_node_dim
+    else:
+        input_dim = base_node_dim
     global_dim = train_graphs[0].global_attr.shape[1]
 
     print(f"Loaded {len(graphs_raw)} hetero graphs from {args.h5_path}")
@@ -379,6 +502,15 @@ def main() -> None:
             latent_edge_dim=32,
             edge_encoder=args.edge_encoder,
             svd_weights_path=str(args.svd_weights_path) if args.svd_weights_path else None,
+            node_encoder=args.node_encoder,
+            latent_node_dim=args.latent_node_dim,
+            node_pad=args.node_pad,
+            node_z_extent=args.node_z_extent,
+            edge_norm=args.edge_norm,
+            edge_raw_means=args.edge_raw_means,
+            node_aggr=args.node_aggr,
+            cnn_activation=args.cnn_activation,
+            head_no_norm=args.head_no_norm,
         )
 
     checkpoint_cb = ModelCheckpoint(

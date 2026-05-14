@@ -1,0 +1,6 @@
+# All training and evaluation artifacts. The scripts that produce them are
+# tracked; the artifacts themselves are not.
+runs/
+benchmark.h5
+benchmark_manifest.json
+case_geology_map.json
