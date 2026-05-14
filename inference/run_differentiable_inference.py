@@ -40,7 +40,7 @@ from compile_minimal_geothermal_h5 import (
     extract_vertical_profiles,
 )
 from preprocess_h5 import get_valid_mask, find_z_cutoff, PROPERTIES, PERM_PROPS
-from geothermal.data import HeteroGraphScaler, build_single_hetero_data
+from geothermal.data import HeteroGraphScaler, build_single_hetero_data, hparams_to_data_kwargs
 from geothermal.model import HeteroGNNRegressor
 
 
@@ -118,6 +118,27 @@ def main() -> None:
         print(f"Loaded training scaler from {scaler_path}")
     else:
         raise FileNotFoundError(f"Scaler not found at {scaler_path}")
+
+    # 2b. Peek at checkpoint hparams so build_single_hetero_data produces graphs
+    # matching what the model was trained on (node_encoder / enrich_global_attr).
+    # We avoid full model instantiation here — that happens later after device
+    # selection — by reading the raw checkpoint dict.
+    if checkpoint_path.exists():
+        import pathlib as _pl
+        if hasattr(torch.serialization, "add_safe_globals"):
+            torch.serialization.add_safe_globals([_pl.PosixPath, _pl.WindowsPath])
+        ckpt_blob = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+        hparams = ckpt_blob.get("hyper_parameters", {}) or ckpt_blob.get("hparams", {})
+        node_encoder = hparams.get("node_encoder", "profile")
+        global_dim = int(hparams.get("global_dim", 1))
+        enrich_global_attr = global_dim != 1
+        del ckpt_blob
+    else:
+        # No checkpoint -> use the current train.py defaults.
+        node_encoder = "cnn"
+        enrich_global_attr = True
+    data_kw = {"node_encoder": node_encoder, "enrich_global_attr": enrich_global_attr}
+    print(f"Data pipeline kwargs: {data_kw}")
 
     # 3. Process all Geology H5 files & map wells natively
     print(f"Loading raw geology data from {len(geology_paths)} geology file(s)...")
@@ -228,6 +249,7 @@ def main() -> None:
             target_val=0.0,
             vertical_profile=vertical_profiles,
             case_id=f"inference_custom_geo_{geo_idx}",
+            **data_kw,
         )
 
         target_graph = scaler.transform_graph(raw_graph)

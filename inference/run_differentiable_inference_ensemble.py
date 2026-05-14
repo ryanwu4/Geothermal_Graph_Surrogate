@@ -30,7 +30,7 @@ from compile_minimal_geothermal_h5 import (
     extract_vertical_profiles,
 )
 from preprocess_h5 import get_valid_mask, find_z_cutoff, PROPERTIES, PERM_PROPS
-from geothermal.data import HeteroGraphScaler, build_single_hetero_data
+from geothermal.data import HeteroGraphScaler, build_single_hetero_data, hparams_to_data_kwargs, peek_data_kwargs_from_checkpoint
 from geothermal.model import HeteroGNNRegressor
 
 # -----------------------------------------------------------------------------
@@ -138,6 +138,7 @@ def _build_raw_graph(
     geology_path: Path,
     norm_config: dict,
     wells_cfg: list[dict],
+    data_kw: dict | None = None,
 ) -> tuple[object, np.ndarray, tuple[int, int, int]]:
     with h5py.File(geology_path, "r") as src:
         valid_mask = get_valid_mask(src)
@@ -229,6 +230,7 @@ def _build_raw_graph(
         target_val=0.0,
         vertical_profile=vertical_profiles,
         case_id="ensemble_inference",
+        **(data_kw or {}),
     )
 
     perm_x_grid = physics_dict["PermX"].cpu().numpy()
@@ -496,10 +498,24 @@ def main() -> None:
         )
 
     wells_cfg = config["wells"]
+    # All ensemble members must agree on the data pipeline so a single
+    # raw_graph can feed every member's scaler. Verify before building.
+    member_data_kws = [
+        peek_data_kwargs_from_checkpoint(member["checkpoint"]) for member in members
+    ]
+    distinct = {tuple(sorted(kw.items())) for kw in member_data_kws}
+    if len(distinct) > 1:
+        raise ValueError(
+            "Ensemble members disagree on data-pipeline config "
+            f"(node_encoder / enrich_global_attr). Saw {distinct}."
+        )
+    ensemble_data_kw = member_data_kws[0]
+    print(f"Ensemble data pipeline kwargs: {ensemble_data_kw}")
     raw_graph, background, full_shape = _build_raw_graph(
         geology_path=geology_path,
         norm_config=norm_config,
         wells_cfg=wells_cfg,
+        data_kw=ensemble_data_kw,
     )
 
     device = _resolve_device(gpu_index)

@@ -375,5 +375,54 @@ def main():
 
     logging.info(f"Successfully generated lightweight ML dataset at {args.output_h5}")
 
+    # Emit a case_id -> geology_index map alongside the compiled H5, so the
+    # training-time stratified split can resolve every case without runtime
+    # fingerprinting. Bootstrap-only output (no AL cases yet) - we resolve via
+    # the standard filenum_to_scenario_mapping.csv + geologies_full*.json
+    # lookup paths.
+    _write_case_geology_map(Path(args.output_h5))
+
+
+def _write_case_geology_map(compiled_h5_path: Path) -> None:
+    """Generate ``<compiled_h5>.parent / case_geology_map.json`` from the
+    cases just written. Uses the same per-case resolver that train.py uses
+    at runtime (so the two paths are guaranteed consistent).
+
+    No-op if the resolver can't label every case (e.g., missing CSV /
+    geologies config) — train.py will fall back to the runtime resolver
+    in that case.
+    """
+    try:
+        import h5py
+        from geothermal.data import resolve_geology_indices
+    except Exception as e:
+        logging.warning(f"Could not import resolver for case_geology_map: {e}")
+        return
+
+    with h5py.File(str(compiled_h5_path), "r") as f:
+        case_ids = sorted(f.keys())
+    if not case_ids:
+        logging.warning("No cases in compiled H5; skipping case_geology_map.json")
+        return
+    geos = resolve_geology_indices(case_ids, compiled_h5_path)
+    if geos is None:
+        logging.warning(
+            "Could not resolve all geology indices; case_geology_map.json not written. "
+            "Train.py will fall back to runtime resolution."
+        )
+        return
+    map_path = Path(compiled_h5_path).with_name("case_geology_map.json")
+    payload = {
+        cid: {"geology_index": int(g)}
+        for cid, g in zip(case_ids, geos.tolist())
+    }
+    with open(map_path, "w") as out:
+        json.dump(payload, out, indent=2)
+    n_geos = int(np.unique(geos).size)
+    logging.info(
+        f"Wrote {map_path} ({len(case_ids)} cases, {n_geos} geologies)"
+    )
+
+
 if __name__ == "__main__":
     main()

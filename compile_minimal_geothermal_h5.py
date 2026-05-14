@@ -561,6 +561,28 @@ def compile_dataset(
 
     print(f"Wrote minimal compiled dataset to: {output_file}")
 
+    # Emit a case_id -> geology_index map alongside the compiled H5 so the
+    # training-time stratified split can resolve cases without runtime
+    # fingerprinting. No-op if metadata files can't be located.
+    try:
+        from geothermal.data import resolve_geology_indices
+        import json as _json
+        with h5py.File(str(output_file), "r") as f:
+            case_ids = sorted(f.keys())
+        geos = resolve_geology_indices(case_ids, output_file)
+        if geos is not None:
+            map_path = Path(output_file).with_name("case_geology_map.json")
+            payload = {
+                cid: {"geology_index": int(g)} for cid, g in zip(case_ids, geos.tolist())
+            }
+            with open(map_path, "w") as out:
+                _json.dump(payload, out, indent=2)
+            print(f"Wrote {map_path} ({len(case_ids)} cases)")
+        else:
+            print("NOTE: could not resolve all geology indices; case_geology_map.json not written")
+    except Exception as e:
+        print(f"NOTE: skipping case_geology_map.json: {e}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

@@ -36,7 +36,7 @@ from geothermal.active_learning_utils import (
     read_geology_metadata,
     to_julia_wells_text,
 )
-from geothermal.data import HeteroGraphScaler, build_single_hetero_data
+from geothermal.data import HeteroGraphScaler, build_single_hetero_data, hparams_to_data_kwargs
 from geothermal.model import HeteroGNNRegressor
 from preprocess_h5 import PROPERTIES, PERM_PROPS, find_z_cutoff, get_valid_mask
 
@@ -291,14 +291,30 @@ def main() -> None:
         ).to(device)
         member_model.eval()
         target_mean, target_scale = _scaler_to_torch(member_scaler, device)
+        member_data_kw = hparams_to_data_kwargs(member_model.hparams)
         member_payloads.append(
             {
                 "scaler": member_scaler,
                 "model": member_model,
                 "target_mean": target_mean,
                 "target_scale": target_scale,
+                "data_kw": member_data_kw,
             }
         )
+
+    # Verify all ensemble members agree on the data pipeline; if not, we need
+    # to build a separate raw_graph per member (currently we build one and
+    # feed it to every member). For now, refuse the heterogeneous case
+    # explicitly rather than silently produce wrong scaler inputs.
+    distinct_kws = {tuple(sorted(p["data_kw"].items())) for p in member_payloads}
+    if len(distinct_kws) > 1:
+        raise ValueError(
+            "Ensemble members disagree on data-pipeline config (node_encoder / "
+            f"enrich_global_attr). Saw {distinct_kws}. Either retrain so members "
+            "share these settings, or extend the loop below to build a per-member "
+            "raw_graph."
+        )
+    ensemble_data_kw = member_payloads[0]["data_kw"]
 
     tqdm.write(f"Loaded {len(members)} models.")
 
@@ -553,6 +569,7 @@ def main() -> None:
                     target_val=0.0,
                     vertical_profile=vertical_profiles,
                     case_id=f"run{chunk_start+m_idx}",
+                    **ensemble_data_kw,
                 )
 
                 for e_idx, payload in enumerate(member_payloads):

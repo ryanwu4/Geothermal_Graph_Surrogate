@@ -2,9 +2,18 @@
 
 ## Overview
 
-This project uses a **heterogeneous graph neural network (Hetero-GNN)** to predict field-level energy production from geothermal well configurations. Wells are modeled as nodes in a graph, with edges representing subsurface geological connectivity via **k-nearest neighbors**. Edge features are dynamically extracted by a **3D CNN** that crops and processes local geological volumes between each well pair. The model is built with [PyTorch Geometric](https://pyg.org) and trained via [PyTorch Lightning](https://lightning.ai).
+This project uses a **heterogeneous graph neural network (Hetero-GNN)** to predict field-level energy production from geothermal well configurations. Wells are modeled as nodes in a graph, with edges representing subsurface geological connectivity via **k-nearest neighbors**. Edge and node features are dynamically extracted by **3D CNNs** that crop and process local geological volumes around each well and each well pair. The model is built with [PyTorch Geometric](https://pyg.org) and trained via [PyTorch Lightning](https://lightning.ai).
 
 The entire pipeline — from continuous well coordinates through physics interpolation, CNN feature extraction, and GNN prediction — is **end-to-end differentiable**, enabling gradient-based optimization of well placement.
+
+> **Note on defaults (May 2026).** After a deep investigation into a geo-8 OOD
+> failure mode, the model defaults changed substantially. Most prominently:
+> `--loss` is now MSE (was Huber), the edge CNN uses `GroupNorm` + a raw-means
+> bypass (was BatchNorm), node features are produced by a 3D CNN around each
+> well (`--node-encoder cnn`, was the 25-d hand-engineered profile), and
+> `--enrich-global-attr` adds reservoir-mean physics stats to the graph-level
+> input. See `analysis/geo8_benchmark/FINDINGS.md` for the diagnostic story
+> and benchmark numbers.
 
 ---
 
@@ -20,38 +29,76 @@ Each simulation run is encoded as a single **heterogeneous graph**:
 | **Edge types** | 4 typed relations: `inj→inj`, `ext→ext`, `inj→ext`, `ext→inj` |
 | **Edge source** | K-nearest neighbors (k=2 per type) based on 3D Euclidean distance |
 
-### Node Features (33 dimensions)
+### Node Features
+
+The node encoder is selected by `--node-encoder` (default: `cnn`):
+
+**`--node-encoder cnn` (default)** — 9 base scalars + a learned 32-d CNN embedding:
 
 | Index | Feature | Source |
 |---|---|---|
 | 0 | Injection rate | Well operating parameter |
-| 1 | Depth (deepest perforated layer) | Well geometry |
-| 2–4 | Permeability (x, y, z) | Reservoir property at well |
-| 5 | Porosity | Reservoir property at well |
-| 6 | Initial temperature | Reservoir state |
-| 7 | Initial pressure | Reservoir state |
-| 8–32 | Vertical profile statistics (25 features) | Mean/min/max/std over 6 properties × 4 stats + n_layers |
+| 1 | Perf top Z-index | Well geometry (= max(0, depth − n_layers + 1)) |
+| 2–4 | Permeability (x, y, z) at well cell | Reservoir property at well |
+| 5 | Porosity at well cell | Reservoir property at well |
+| 6 | Initial temperature at well cell | Reservoir state |
+| 7 | Initial pressure at well cell | Reservoir state |
+| 8 | n_layers (perforation length) | Well geometry |
+
+Plus a `PhysicsNodeSlabCNN` 32-d embedding produced by cropping a small 3D slab
+around each well (full-Z, ±3 in XY by default), concatenated with the 9 scalars.
+The CNN uses GroupNorm (not BatchNorm — see FINDINGS.md) and a raw-channel-means
+bypass that preserves absolute-magnitude signal across geologies.
+
+**`--node-encoder profile` (legacy)** — 8 base scalars (with `depth` instead of
+`perf_top` and *no* `n_layers`) + 25 hand-engineered `well_vertical_profile`
+statistics (6 properties × {mean, min, max, std} + n_layers) = 33 dims total.
+
+**`--node-encoder hybrid`** — 33-d legacy profile features *plus* the CNN
+embedding. Mostly redundant with profile alone (see ablation study) but
+available for experiments.
 
 ### Edge Features (dynamically computed by 3D CNN)
 
-Edge features are **not hardcoded**. Instead, a `PhysicsSlabCNN` dynamically extracts them:
+Edge features are **not hardcoded**. A `PhysicsSlabCNN` dynamically extracts them:
 
 1. For each well pair (edge), a **3D sub-volume** of the geology grid is cropped using differentiable `grid_sample` interpolation
 2. The crop is resized to a fixed 32×32×16 volume and concatenated with 3D Gaussian heatmaps marking each well's position
-3. A **3D CNN** (Conv3d → BatchNorm → GELU → MaxPool) processes the volume into a latent vector
-4. The latent vector is concatenated with the Euclidean distance Δs between the wells
+3. A **3D CNN** (Conv3d → norm → activation → MaxPool) processes the volume into a latent vector
+4. The latent vector is concatenated with the Euclidean distance Δs between the wells, and (when `--edge-raw-means` is set, default) with a 16-d projection of per-channel slab means computed pre-CNN
 5. An MLP compresses the result to the configured `latent_edge_dim` (default: 32)
+
+**Normalization**: `--edge-norm groupnorm` (default) preserves per-instance
+absolute scale across the batch. The earlier BatchNorm default stripped the
+absolute-magnitude signal that distinguishes outlier geologies — switching to
+GroupNorm + a raw-means bypass was the central fix for the geo-8 OOD problem.
 
 **Physics channels** processed by the CNN:
 - PermX, PermY, PermZ (log-transformed, min-max normalized)
 - Porosity, Temperature0, Pressure0 (min-max normalized)
 - valid_mask (binary rock/void indicator)
 
-### Global Features (1 dimension)
+### Global Features
+
+The graph-level features fed to the prediction head are controlled by
+`--enrich-global-attr` (default: enabled):
+
+**`--enrich-global-attr` (default)** — 8 dimensions:
 
 | Index | Feature |
 |---|---|
-| 0 | Well count (number of nodes in the graph) |
+| 0 | Well count |
+| 1–3 | Reservoir-mean PermX / PermY / PermZ (over valid voxels) |
+| 4 | Reservoir-mean porosity |
+| 5 | Reservoir-mean initial temperature |
+| 6 | Reservoir-mean initial pressure |
+| 7 | Anisotropy (mean PermZ / mean PermX) |
+
+These give the prediction head a direct geology fingerprint that bypasses the
+GNN message-passing — disproportionately helpful for OOD geologies whose
+physics distribution differs from the cohort.
+
+**`--no-enrich-global-attr`** — legacy 1-d `global_attr = [n_wells]`.
 
 ### Model Architecture (`HeteroGNNRegressor`)
 
@@ -88,19 +135,27 @@ Input: HeteroData graph
 
 ### Default Hyperparameters
 
-| Parameter | Default |
-|---|---|
-| Hidden dim | 32 |
-| Latent edge dim | 32 |
-| CNN channels | 8 → 16 → 32 → 32 |
-| Num GNN layers | 2 |
-| Dropout | 0.0 |
-| Learning rate | 3e-4 |
-| Weight decay | 1e-2 |
-| Loss | Huber (δ=1.0) |
-| Optimizer | AdamW |
-| LR scheduler | ReduceLROnPlateau (factor=0.5, patience=10) |
-| Early stopping | patience=60 on val_loss |
+| Parameter | Default | Notes |
+|---|---|---|
+| Hidden dim | 32 | |
+| Latent edge dim | 32 | |
+| Latent node dim | 32 | (when `--node-encoder cnn`) |
+| Edge CNN channels | 8 → 16 → 32 → 32 | |
+| Node CNN channels | 16 → 32 → 32 | Z-stride only; preserves 7×7 XY |
+| Num GNN layers | 2 | |
+| Dropout | 0.0 | |
+| Learning rate | 3e-4 | |
+| Weight decay | 1e-2 | |
+| **Loss** | **MSE** | Was Huber(δ=1.0); switched in May 2026 |
+| **Edge norm** | **GroupNorm** | Was BatchNorm3d |
+| **Edge raw-means bypass** | **on** | New (see FINDINGS) |
+| **Node encoder** | **cnn** | Was hand-coded `profile` |
+| **`enrich_global_attr`** | **on** | New (was just `[n_wells]`) |
+| **Slab Z extent (node)** | **full** | covers whole active reservoir, not just perforation |
+| Optimizer | AdamW | |
+| LR scheduler | ReduceLROnPlateau (factor=0.5, patience=10) | |
+| Early stopping | patience=30 on val_loss | Used by AL workflow |
+| TF32 matmul precision | `"high"` | ~2× throughput on Ampere+ |
 
 ---
 
@@ -138,10 +193,44 @@ Use `--compute-only` to only compute normalization stats without building the H5
 ```bash
 python train.py \
     --h5-path compiled_full_CNN.h5 \
-    --target graph_energy_total \
-    --gpu 0
+    --target graph_discounted_net_revenue \
+    --stratified-split \
+    --gpu 0 \
     --cache-to-gpu
 ```
+
+All Tier-A/B fixes (geology-aware stratified split, MSE loss, GroupNorm edge CNN,
+raw-means bypasses, CNN node encoder with full-Z slab, enriched global_attr,
+TF32 matmul precision) are on by default. To disable any one:
+
+| Flag to disable | Effect |
+|---|---|
+| `--loss huber` | Switch back to Huber loss (note: prediction-floor artifact). |
+| `--edge-norm batchnorm` | Revert edge CNN to BatchNorm3d. |
+| `--no-edge-raw-means` | Disable edge raw-means bypass. |
+| `--node-encoder profile` | Use the legacy 25-d hand-engineered profile. |
+| `--node-z-extent perforation` | Resample slab Z to exactly the well perforation. |
+| `--no-enrich-global-attr` | Use `[n_wells]` only. |
+| `--no-stratified-split` | Use a plain random train/val/test split. |
+
+### Geology-aware stratified split
+
+`--stratified-split` is on by default. The per-case geology index is resolved
+in this order:
+
+1. `case_geology_map.json` adjacent to the H5, if present. This file is written
+   automatically by `preprocess_h5.py` / `compile_minimal_geothermal_h5.py` at
+   the end of compilation, so freshly-compiled datasets get it for free.
+2. Otherwise resolved at training time from case_id patterns:
+   - AL-acquired cases (`..._iter\d+_<scen>_run<runnum>_iter\d+`) →
+     `geology_index = runnum // 10000`.
+   - Bootstrap cases (`v2.5_NNNN` / `v2.4_NNNN`) → looked up via
+     `filenum_to_scenario_mapping.csv` (searched in surrogate repo root,
+     surrogate `configs/`, then the Julia repo) and a `geologies_full*.json`.
+   - Otherwise a fingerprint match on a representative case's PermZ field.
+
+If geology indices can't be resolved for every case, the split falls back to
+target-only quantile stratification.
 
 **With top-k% withholding** (removes top 10% of runs by energy production):
 ```bash

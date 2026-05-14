@@ -85,6 +85,202 @@ ABLATION_GROUPS = {
 }
 
 
+def hparams_to_data_kwargs(hparams) -> dict:
+    """Extract data-pipeline kwargs from a loaded model's hparams.
+
+    Use this after `HeteroGNNRegressor.load_from_checkpoint(...)` to thread the
+    correct `node_encoder` / `enrich_global_attr` settings into
+    `build_single_hetero_data` / `load_hetero_graphs`. Falls back to legacy
+    defaults if the checkpoint predates these fields.
+
+    Inference path:
+        model = HeteroGNNRegressor.load_from_checkpoint(...)
+        data_kw = hparams_to_data_kwargs(model.hparams)
+        raw_graph = build_single_hetero_data(..., **data_kw)
+    """
+    # `hparams` may be either a Namespace-like object or a plain dict.
+    if isinstance(hparams, dict):
+        node_encoder = hparams.get("node_encoder", "profile")
+        global_dim = int(hparams.get("global_dim", 1))
+    else:
+        node_encoder = getattr(hparams, "node_encoder", "profile")
+        global_dim = int(getattr(hparams, "global_dim", 1))
+    enrich_global_attr = global_dim != 1
+    return {
+        "node_encoder": node_encoder,
+        "enrich_global_attr": enrich_global_attr,
+    }
+
+
+def _search_geology_metadata_files() -> tuple[Path | None, Path | None]:
+    """Find ``filenum_to_scenario_mapping.csv`` and ``geologies_full*.json``
+    via standard relative paths from this file. Returns (csv_path, config_path)
+    where either may be None if not found.
+
+    Search order (first match wins for each file):
+
+    CSV:
+      1. ``<surrogate-repo>/filenum_to_scenario_mapping.csv`` — preferred location
+         for the AL workflow's local copy.
+      2. ``<surrogate-repo>/configs/filenum_to_scenario_mapping.csv``
+      3. ``<workspace>/GeologicalSimulationWrapper.jl/filenum_to_scenario_mapping.csv``
+
+    Geology config:
+      1. ``<surrogate-repo>/configs/geologies_full*.json``
+      2. ``<workspace>/geothermal_active_learning/configs/geologies_full*.json``
+    """
+    here = Path(__file__).resolve()
+    # geothermal/data.py -> Geothermal_Graph_Surrogate/geothermal -> Geothermal_Graph_Surrogate
+    surrogate_repo = here.parent.parent
+    # ... -> omv_geothermal/
+    workspace = surrogate_repo.parent
+    csv_candidates = [
+        surrogate_repo / "filenum_to_scenario_mapping.csv",
+        surrogate_repo / "configs" / "filenum_to_scenario_mapping.csv",
+        workspace / "GeologicalSimulationWrapper.jl" / "filenum_to_scenario_mapping.csv",
+    ]
+    cfg_candidates = [
+        surrogate_repo / "configs" / "geologies_full_local.json",
+        surrogate_repo / "configs" / "geologies_full.json",
+        workspace / "geothermal_active_learning" / "configs" / "geologies_full_local.json",
+        workspace / "geothermal_active_learning" / "configs" / "geologies_full.json",
+    ]
+    csv = next((p for p in csv_candidates if p.exists()), None)
+    cfg = next((p for p in cfg_candidates if p.exists()), None)
+    return csv, cfg
+
+
+def resolve_geology_indices(
+    case_ids: list[str],
+    h5_path: Path | str,
+) -> np.ndarray | None:
+    """Return a per-case geology_index array, derived from case_id patterns +
+    optional metadata files + H5 fingerprints.
+
+    Resolution order per case:
+      1. AL pattern (``..._iter\\d+_<scenario>_run<runnum>_iter\\d+$``) →
+         geology_index = ``runnum // 10000``.
+      2. Bootstrap pattern (``v2.5_NNNN`` / ``v2.4_NNNN``) →
+         ``filenum_to_scenario_mapping.csv`` filenum → scenario,
+         then ``geologies_full*.json`` scenario → geology_index.
+      3. Fingerprint fallback: rounded log10-mean PermZ over valid voxels.
+         Buckets that share a fingerprint with at least one AL- or bootstrap-
+         labelled case inherit that label.
+
+    Returns ``None`` if any case can't be assigned (caller falls back to
+    target-only stratification).
+    """
+    import re
+    import csv as _csv
+    import h5py
+    AL_RE = re.compile(r".*_iter\d+_\d+_run(\d+)_iter\d+$")
+    BOOT_RE = re.compile(r"^v2\.[45]_(\d{4})$")
+
+    # Lazy-load the bootstrap CSV + geology config once if we'll need them.
+    filenum_to_scenario: dict[int, int] | None = None
+    scenario_to_geo: dict[int, int] | None = None
+
+    def _ensure_bootstrap_tables() -> bool:
+        nonlocal filenum_to_scenario, scenario_to_geo
+        if filenum_to_scenario is not None and scenario_to_geo is not None:
+            return True
+        csv_p, cfg_p = _search_geology_metadata_files()
+        if csv_p is None or cfg_p is None:
+            return False
+        try:
+            fn_map: dict[int, int] = {}
+            with open(csv_p) as f:
+                for row in _csv.DictReader(f):
+                    fn_map[int(row["Num"])] = int(row["Scenario"])
+            with open(cfg_p) as f:
+                cfg = json.load(f)
+            sc_map: dict[int, int] = {
+                int(e["scenario"]): int(e["geology_index"]) for e in cfg["geologies"]
+            }
+            filenum_to_scenario = fn_map
+            scenario_to_geo = sc_map
+            return True
+        except Exception as e:
+            print(f"NOTE: could not load geology metadata files: {e}")
+            return False
+
+    geo_by_idx: dict[int, int] = {}
+    unresolved: list[int] = []
+
+    for i, cid in enumerate(case_ids):
+        m_al = AL_RE.match(cid)
+        if m_al is not None:
+            geo_by_idx[i] = int(m_al.group(1)) // 10000
+            continue
+        m_boot = BOOT_RE.match(cid)
+        if m_boot is not None and _ensure_bootstrap_tables():
+            filenum = int(m_boot.group(1))
+            scen = filenum_to_scenario.get(filenum)  # type: ignore[union-attr]
+            if scen is not None and scen in scenario_to_geo:  # type: ignore[operator]
+                geo_by_idx[i] = scenario_to_geo[scen]  # type: ignore[index]
+                continue
+        unresolved.append(i)
+
+    # Fingerprint fallback for anything still unresolved.
+    if unresolved:
+        fingerprints: dict[int, float] = {}
+        with h5py.File(str(h5_path), "r") as f:
+            def _fp(cid: str) -> float | None:
+                try:
+                    permz = f[cid]["physics_tensors"]["PermZ"][:]
+                    valid = f[cid]["physics_tensors"]["valid_mask"][:] > 0.5
+                    vals = permz[valid]
+                    return float(np.round(np.mean(vals), 3)) if vals.size else None
+                except Exception:
+                    return None
+            for i in unresolved:
+                fp = _fp(case_ids[i])
+                if fp is not None:
+                    fingerprints[i] = fp
+            # Seed the fp->geo table from already-labelled cases (up to 200 for speed).
+            fp_to_geo: dict[float, int] = {}
+            for i, geo in list(geo_by_idx.items())[: min(200, len(geo_by_idx))]:
+                fp = _fp(case_ids[i])
+                if fp is not None and fp not in fp_to_geo:
+                    fp_to_geo[fp] = geo
+        labelled_fps = np.array(list(fp_to_geo.keys())) if fp_to_geo else np.array([])
+        for i in unresolved:
+            fp = fingerprints.get(i)
+            if fp is None:
+                return None
+            if fp in fp_to_geo:
+                geo_by_idx[i] = fp_to_geo[fp]
+            elif labelled_fps.size > 0:
+                nearest = labelled_fps[int(np.argmin(np.abs(labelled_fps - fp)))]
+                geo_by_idx[i] = fp_to_geo[float(nearest)]
+            else:
+                return None
+
+    return np.array([geo_by_idx[i] for i in range(len(case_ids))], dtype=np.int64)
+
+
+def peek_data_kwargs_from_checkpoint(ckpt_path: Path | str | None) -> dict:
+    """Read data-pipeline kwargs from a checkpoint file without instantiating the model.
+
+    Useful when the inference script needs to build graphs *before* the model
+    object is constructed (e.g., when graph construction happens before the
+    device is chosen and the model is moved to it).
+
+    Returns the kwargs dict consumed by `build_single_hetero_data` /
+    `load_hetero_graphs`. If `ckpt_path` is None or doesn't exist, falls back to
+    the current train.py defaults (`node_encoder='cnn'`, `enrich_global_attr=True`).
+    """
+    if ckpt_path is None or not Path(ckpt_path).exists():
+        return {"node_encoder": "cnn", "enrich_global_attr": True}
+    import torch
+    import pathlib as _pl
+    if hasattr(torch.serialization, "add_safe_globals"):
+        torch.serialization.add_safe_globals([_pl.PosixPath, _pl.WindowsPath])
+    blob = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    hparams = blob.get("hyper_parameters") or blob.get("hparams") or {}
+    return hparams_to_data_kwargs(hparams)
+
+
 def apply_ablation(graphs: list, ablate_groups: list[str]) -> None:
     """Zero out specified node feature groups in-place for ablation study."""
     for group_name in ablate_groups:
@@ -155,8 +351,14 @@ class HeteroGraphScaler:
         y_scaled = self.target_scaler.transform(y_raw)
 
         transformed.y = torch.tensor(y_scaled, dtype=torch.float32)
-        transformed.prediction_level = "graph"
-        transformed.filter_extractors = False
+        # Propagate prediction-level attributes from the source graph instead of
+        # hardcoding "graph" / False. Hardcoding silently broke node-level targets
+        # (`node_wept`, `node_tp_final`): the loss-step's injector mask, which
+        # consults `batch.filter_extractors`, was always False after scaling.
+        transformed.prediction_level = getattr(graph, "prediction_level", "graph")
+        transformed.filter_extractors = getattr(graph, "filter_extractors", False)
+        if hasattr(graph, "output_dim"):
+            transformed.output_dim = graph.output_dim
         transformed.case_id = graph.case_id
 
         # Bring over the physics wrappers
@@ -406,10 +608,21 @@ def load_hetero_graphs(
                 skipped_empty += 1
                 continue
 
-            # Vertical profile: 25 features per well (6 props × 4 stats + n_layers)
+            # Vertical profile: 25 features per well (6 props × 4 stats + n_layers).
+            # Required for node_encoder='cnn' / 'hybrid' because perf_range is
+            # derived from `n_layers = vertical_profile[:, 24]`. A missing profile
+            # in profile-mode is recoverable (zero stats); in CNN modes it would
+            # silently produce an all-zero perforation mask and n_layers=0, so we
+            # raise loudly instead.
             if "well_vertical_profile" in group:
                 vertical_profile = group["well_vertical_profile"][:].astype(np.float32)
             else:
+                if node_encoder in ("cnn", "hybrid"):
+                    raise KeyError(
+                        f"Case {case_id!r} in {h5_path} is missing `well_vertical_profile`, "
+                        f"required by node_encoder={node_encoder!r} (used to derive per-well "
+                        "perforation range and n_layers). Re-run compile_minimal_geothermal_h5.py."
+                    )
                 vertical_profile = np.zeros((len(wells), 25), dtype=np.float32)
 
             physics_dict = {}

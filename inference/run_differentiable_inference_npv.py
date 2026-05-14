@@ -42,7 +42,7 @@ from compile_minimal_geothermal_h5 import (
 )
 from preprocess_h5 import get_valid_mask, find_z_cutoff, PROPERTIES, PERM_PROPS
 from geothermal.economics import compute_real_discount_rate
-from geothermal.data import HeteroGraphScaler, build_single_hetero_data
+from geothermal.data import HeteroGraphScaler, build_single_hetero_data, peek_data_kwargs_from_checkpoint
 from geothermal.model import HeteroGNNRegressor
 
 
@@ -624,6 +624,10 @@ def main() -> None:
         )
         vertical_profiles = extract_vertical_profiles(is_well, x_idx, y_idx, src)
 
+    # Pull node_encoder / enrich_global_attr from the checkpoint hparams so the
+    # graph we build matches the scaler the model was trained against.
+    data_kw = peek_data_kwargs_from_checkpoint(checkpoint_path)
+    print(f"Data pipeline kwargs: {data_kw}")
     raw_graph = build_single_hetero_data(
         wells=wells,
         physics_dict=physics_dict,
@@ -632,6 +636,7 @@ def main() -> None:
         target_val=0.0,
         vertical_profile=vertical_profiles,
         case_id="inference_custom",
+        **data_kw,
     )
 
     # Isolate a single case to optimize

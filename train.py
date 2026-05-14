@@ -113,7 +113,16 @@ def main() -> None:
     parser.add_argument("--no-whiten", action="store_true")
     parser.add_argument("--pca-components", type=int, default=None)
     parser.add_argument("--no-residual", action="store_true")
-    parser.add_argument("--stratified-split", action="store_true")
+    parser.add_argument(
+        "--stratified-split",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use stratified (geology + target-bin) train/val/test split. Default "
+            "on. Use --no-stratified-split to fall back to a plain random split "
+            "(the legacy behaviour)."
+        ),
+    )
     parser.add_argument("--grad-clip-val", type=float, default=1.0)
     parser.add_argument("--extreme-k", type=int, default=20)
     parser.add_argument("--plots-dir", type=Path, default=None)
@@ -348,7 +357,11 @@ def main() -> None:
 
     if args.stratified_split:
         # Try to load the case_id -> geology_index map adjacent to the H5 to
-        # enable geology-aware stratification. Falls back to target-only.
+        # enable geology-aware stratification. Falls back, in order:
+        #   1. JSON map file (if exists and covers every case)
+        #   2. Derived from case_id patterns + H5 PermZ fingerprints (self-contained)
+        #   3. Target-only stratification (legacy)
+        case_ids = [g.case_id for g in graphs_raw]
         geology_indices = None
         geo_map_candidates = [
             args.h5_path.parent / "case_geology_map.json",
@@ -358,7 +371,6 @@ def main() -> None:
                 try:
                     with open(cand) as f:
                         gmap = json.load(f)
-                    case_ids = [g.case_id for g in graphs_raw]
                     if all(cid in gmap for cid in case_ids):
                         geology_indices = np.array(
                             [int(gmap[cid]["geology_index"]) for cid in case_ids],
@@ -367,10 +379,20 @@ def main() -> None:
                         print(f"Loaded geology map for stratification from {cand}")
                     else:
                         n_miss = sum(1 for cid in case_ids if cid not in gmap)
-                        print(f"WARN: geology map at {cand} missing {n_miss}/{len(case_ids)} case_ids; falling back to target-only stratification")
+                        print(f"NOTE: geology map at {cand} missing {n_miss}/{len(case_ids)} case_ids; falling back to runtime derivation")
                 except Exception as e:
-                    print(f"WARN: could not load {cand}: {e}; falling back to target-only stratification")
+                    print(f"WARN: could not load {cand}: {e}; falling back to runtime derivation")
                 break
+        if geology_indices is None:
+            # No usable JSON map — derive geology indices from case_ids + H5.
+            # This is the normal path for AL runs against current_compiled.h5.
+            from geothermal.data import resolve_geology_indices
+            geology_indices = resolve_geology_indices(case_ids, args.h5_path)
+            if geology_indices is not None:
+                n_geos = int(np.unique(geology_indices).size)
+                print(f"Derived geology indices from case_ids/fingerprints: {len(case_ids)} cases over {n_geos} geologies")
+            else:
+                print("NOTE: could not derive geology indices; falling back to target-only stratification")
         train_idx, val_idx, test_idx = split_indices_stratified(
             targets=targets,
             val_fraction=args.val_fraction,
