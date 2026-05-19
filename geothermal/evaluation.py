@@ -445,10 +445,13 @@ def save_predictions_csv(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mean_node_err = np.mean(np.abs(y_pred - y_true), axis=1)
+    yt_mean = np.mean(y_true, axis=1)
+    yp_mean = np.mean(y_pred, axis=1)
 
     with output_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["split", "case_id", "sample_index", "mean_abs_error"])
-        for i, (cid, ae) in enumerate(zip(case_ids, mean_node_err)):
-            writer.writerow([split_name, cid, i, float(ae)])
+        writer.writerow(["split", "case_id", "sample_index",
+                         "mean_abs_error", "y_true", "y_pred"])
+        for i, (cid, ae, yt, yp) in enumerate(zip(case_ids, mean_node_err, yt_mean, yp_mean)):
+            writer.writerow([split_name, cid, i, float(ae), float(yt), float(yp)])
     print(f"Saved predictions: {output_path}")
