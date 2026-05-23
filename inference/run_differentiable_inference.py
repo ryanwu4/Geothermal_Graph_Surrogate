@@ -365,9 +365,20 @@ def main() -> None:
             f"Original Step {step} Mean Energy: {mean_energy.item():.4f} "
             f"Max Grad: {gradients.abs().max().item():.4f}"
         )
-        # print(f"\nOptimization Step {step + 1}/{args.optimization_steps}")
-        # print(f"Predicted Energy: {predicted_energy.item():.4f}")
-        # print(f"Gradients w.r.t (X, Y, Z):\n{gradients}")
+
+        # NaN guard: the surrogate forward can produce non-finite outputs when
+        # wells drift into invalid regions; without sanitizing both grads AND
+        # Adam's running moments, a single bad backward poisons exp_avg /
+        # exp_avg_sq and every subsequent optimizer.step() silently produces
+        # NaN coords. Mirrors the guard in orchestrator/acquire.py.
+        with torch.no_grad():
+            if not torch.isfinite(gradients).all():
+                torch.nan_to_num_(gradients, nan=0.0, posinf=0.0, neginf=0.0)
+                if coords in optimizer.state:
+                    st = optimizer.state[coords]
+                    for key in ("exp_avg", "exp_avg_sq"):
+                        if key in st and not torch.isfinite(st[key]).all():
+                            torch.nan_to_num_(st[key], nan=0.0, posinf=0.0, neginf=0.0)
 
         # Project gradients along feasible directions (Feasible Direction Method)
         # Prevents Adam from accumulating unfeasible momentum pointing outside the grid.

@@ -595,6 +595,21 @@ def main() -> None:
         loss.backward()
 
         gradients = coords.grad
+
+        # NaN guard: the surrogate forward can produce non-finite outputs when
+        # wells drift into invalid regions; without sanitizing both grads AND
+        # Adam's running moments, a single bad backward poisons exp_avg /
+        # exp_avg_sq and every subsequent optimizer.step() silently produces
+        # NaN coords. Mirrors orchestrator/acquire.py.
+        with torch.no_grad():
+            if not torch.isfinite(gradients).all():
+                torch.nan_to_num_(gradients, nan=0.0, posinf=0.0, neginf=0.0)
+                if coords in optimizer.state:
+                    st = optimizer.state[coords]
+                    for key in ("exp_avg", "exp_avg_sq"):
+                        if key in st and not torch.isfinite(st[key]).all():
+                            torch.nan_to_num_(st[key], nan=0.0, posinf=0.0, neginf=0.0)
+
         with torch.no_grad():
             for d, max_val in enumerate([nx - 1, ny - 1, z_max - 1]):
                 mask_lower = (coords[:, d] <= 1e-4) & (gradients[:, d] > 0)

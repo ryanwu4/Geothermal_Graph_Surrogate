@@ -290,6 +290,23 @@ def main() -> None:
             str(member["checkpoint"]), map_location=device
         ).to(device)
         member_model.eval()
+        # Sanity-check that load_from_checkpoint actually populated parameters.
+        # A silent zero-parameter load (we observed this when deep-copying
+        # LightningModules across CUDA devices in the AL orchestrator) would
+        # produce NaN predictions later and waste the rest of the run. Fail
+        # loud here, in <100 ms, with an actionable message.
+        with torch.no_grad():
+            param_sum = float(
+                sum(p.detach().abs().sum().cpu() for p in member_model.parameters())
+            )
+        if not (param_sum > 0 and np.isfinite(param_sum)):
+            raise RuntimeError(
+                f"Ensemble member {idx} loaded from {member['checkpoint']} has "
+                f"parameter-sum {param_sum:.6g} (non-finite or zero). This "
+                f"indicates a broken checkpoint or a load_from_checkpoint "
+                f"regression — refusing to proceed because all subsequent "
+                f"predictions would be NaN/zero."
+            )
         target_mean, target_scale = _scaler_to_torch(member_scaler, device)
         member_data_kw = hparams_to_data_kwargs(member_model.hparams)
         member_payloads.append(
@@ -650,6 +667,21 @@ def main() -> None:
             loss.backward()
 
             gradients = base_coords.grad  # (M, W, 3)
+
+            # NaN guard: the surrogate forward can produce non-finite outputs
+            # when wells drift into invalid regions; without sanitizing both
+            # grads AND Adam's running moments, a single bad backward poisons
+            # exp_avg / exp_avg_sq and every subsequent optimizer.step()
+            # silently produces NaN coords. Mirrors orchestrator/acquire.py.
+            with torch.no_grad():
+                if not torch.isfinite(gradients).all():
+                    torch.nan_to_num_(gradients, nan=0.0, posinf=0.0, neginf=0.0)
+                    if base_coords in optimizer.state:
+                        st = optimizer.state[base_coords]
+                        for key in ("exp_avg", "exp_avg_sq"):
+                            if key in st and not torch.isfinite(st[key]).all():
+                                torch.nan_to_num_(st[key], nan=0.0, posinf=0.0, neginf=0.0)
+
             with torch.no_grad():
                 for d, max_val in enumerate([nx - 1, ny - 1, z_max - 1]):
                     mask_lower = (base_coords[:, :, d] <= 1e-4) & (gradients[:, :, d] > 0)
