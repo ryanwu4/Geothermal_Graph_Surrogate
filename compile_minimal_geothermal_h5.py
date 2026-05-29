@@ -17,6 +17,7 @@ def extract_well_data(
     is_well: np.ndarray,
     inj_rate: np.ndarray,
     src: h5py.File,
+    preloaded_grids: dict[str, np.ndarray] | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -36,7 +37,21 @@ def extract_well_data(
         x_idx, y_idx, depth (deepest Z), inj_rate,
         perm_x, perm_y, perm_z, porosity, temp0, press0,
         depth_centroid (perm-weighted centroid Z index)
+
+    ``preloaded_grids`` (optional): a dict mapping dataset names
+    (``"Input/PermX"``, ``"Input/PermY"``, ``"Input/PermZ"``, ``"Input/Porosity"``,
+    ``"Input/Temperature0"``, ``"Input/Pressure0"``) to their FULL ``[z, x, y]``
+    numpy grids. When supplied, all property reads come from these in-memory
+    grids instead of re-reading ``src`` on every call — letting a caller that
+    extracts many wells from the same geology (e.g. CMA-over-surrogate
+    acquisition) read each grid once. Default ``None`` reproduces the original
+    per-call HDF5 reads byte-for-byte. Only the listed ``Input/*`` properties are
+    consulted; ``is_well``/``inj_rate`` are still the caller's arrays.
     """
+    def _grid(name: str) -> np.ndarray:
+        if preloaded_grids is not None:
+            return preloaded_grids[name]
+        return src[name][:]
     if is_well.shape != inj_rate.shape:
         raise ValueError(
             f"Shape mismatch: IsWell {is_well.shape} vs InjRate {inj_rate.shape}"
@@ -81,17 +96,24 @@ def extract_well_data(
     temp0 = np.zeros_like(inj)
     press0 = np.zeros_like(inj)
 
+    def _slice(name: str, z: int) -> np.ndarray:
+        # Read only the needed z-slice from disk on the default path (cheap);
+        # index the in-memory full grid when grids were preloaded.
+        if preloaded_grids is not None:
+            return preloaded_grids[name][z, :, :]
+        return src[name][z, :, :]
+
     for z in unique_z:
         mask = depth == z
         x_z = x_idx[mask]
         y_z = y_idx[mask]
 
-        px_slice = src["Input/PermX"][z, :, :]
-        py_slice = src["Input/PermY"][z, :, :]
-        pz_slice = src["Input/PermZ"][z, :, :]
-        por_slice = src["Input/Porosity"][z, :, :]
-        t0_slice = src["Input/Temperature0"][z, :, :]
-        p0_slice = src["Input/Pressure0"][z, :, :]
+        px_slice = _slice("Input/PermX", z)
+        py_slice = _slice("Input/PermY", z)
+        pz_slice = _slice("Input/PermZ", z)
+        por_slice = _slice("Input/Porosity", z)
+        t0_slice = _slice("Input/Temperature0", z)
+        p0_slice = _slice("Input/Pressure0", z)
 
         perm_x[mask] = px_slice[x_z, y_z]
         perm_y[mask] = py_slice[x_z, y_z]
@@ -105,7 +127,7 @@ def extract_well_data(
     # perforated interval, and serves as a more physical A* start point
     # than the absolute bottom of the well.
     perm_avg_grid = (
-        src["Input/PermX"][:] + src["Input/PermY"][:] + src["Input/PermZ"][:]
+        _grid("Input/PermX") + _grid("Input/PermY") + _grid("Input/PermZ")
     ) / 3.0
     depth_centroid = np.zeros(x_idx.size, dtype=np.int32)
     for i in range(x_idx.size):
@@ -180,12 +202,18 @@ def extract_vertical_profiles(
     x_idx: np.ndarray,
     y_idx: np.ndarray,
     src: h5py.File,
+    preloaded_grids: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """Compute vertical profile summary statistics for each well.
 
     For each well at (x, y), reads all perforated Z-layers and computes
     mean, min, max, std for 6 properties (perm_x, perm_y, perm_z,
     porosity, temp0, press0) plus n_layers.
+
+    ``preloaded_grids`` (optional): dict mapping the six ``Input/*`` dataset
+    names to their full ``[z, x, y]`` numpy grids. When supplied, the per-call
+    full-grid reads are skipped and the in-memory grids are used instead.
+    Default ``None`` reproduces the original ``src[name][:]`` reads exactly.
 
     Returns:
         Array of shape [N_wells, 25] (6 props * 4 stats + 1 n_layers).
@@ -207,8 +235,12 @@ def extract_vertical_profiles(
         "Input/Temperature0",
         "Input/Pressure0",
     ]
-    # Read full grids once (they're already in memory for A* anyway)
-    grids = [src[name][:] for name in prop_names]
+    # Read full grids once (they're already in memory for A* anyway).
+    # When preloaded grids are supplied, reuse them instead of re-reading src.
+    if preloaded_grids is not None:
+        grids = [preloaded_grids[name] for name in prop_names]
+    else:
+        grids = [src[name][:] for name in prop_names]
 
     profiles = np.zeros((n_wells, N_PROFILE_FEATURES), dtype=np.float32)
 
