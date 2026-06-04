@@ -158,8 +158,16 @@ def resolve_geology_indices(
     optional metadata files + H5 fingerprints.
 
     Resolution order per case:
-      1. AL pattern (``..._iter\\d+_<scenario>_run<runnum>_iter\\d+$``) →
-         geology_index = ``runnum // 10000``.
+      1. AL pattern (``..._iter\\d+_<scenario>_run<runnum>_iter\\d+$``):
+         geology_index from ``<scenario>`` (== geology_config_id / RepNum) via the
+         geologies config — the SINGLE SOURCE OF TRUTH for geology, correct for
+         every emit path (per-geology, ensemble, cma_surrogate, baseline, seed),
+         because the simulator always stamps each IX output with its own
+         geology's scenario. Falls back to the legacy ``runnum // 10000`` ONLY if
+         the geologies config can't be found. (That legacy encoding is correct
+         for per-geology emits, where ``run_id = geology_index*10000 + m``, but
+         collapses ensemble emits — which share one ``run_id`` across all K
+         geologies of a candidate — to geo 0; resolving by scenario avoids that.)
       2. Bootstrap pattern (``v2.5_NNNN`` / ``v2.4_NNNN``) →
          ``filenum_to_scenario_mapping.csv`` filenum → scenario,
          then ``geologies_full*.json`` scenario → geology_index.
@@ -173,35 +181,54 @@ def resolve_geology_indices(
     import re
     import csv as _csv
     import h5py
-    AL_RE = re.compile(r".*_iter\d+_\d+_run(\d+)_iter\d+$")
+    # Group 1 = scenario (geology_config_id), group 2 = runnum. The scenario is
+    # the authoritative geology key; runnum is a per-snapshot uniqueness counter.
+    AL_RE = re.compile(r".*_iter\d+_(\d+)_run(\d+)_iter\d+$")
     BOOT_RE = re.compile(r"^v2\.[45]_(\d{4})$")
 
-    # Lazy-load the bootstrap CSV + geology config once if we'll need them.
+    # Lazy-load the geology config (scenario→geology_index) and, only for the
+    # bootstrap pattern, the filenum→scenario CSV.
     filenum_to_scenario: dict[int, int] | None = None
     scenario_to_geo: dict[int, int] | None = None
 
-    def _ensure_bootstrap_tables() -> bool:
-        nonlocal filenum_to_scenario, scenario_to_geo
-        if filenum_to_scenario is not None and scenario_to_geo is not None:
+    def _ensure_scenario_to_geo() -> bool:
+        """Load scenario→geology_index from the geologies config (no CSV needed)."""
+        nonlocal scenario_to_geo
+        if scenario_to_geo is not None:
             return True
-        csv_p, cfg_p = _search_geology_metadata_files()
-        if csv_p is None or cfg_p is None:
+        _, cfg_p = _search_geology_metadata_files()
+        if cfg_p is None:
+            return False
+        try:
+            with open(cfg_p) as f:
+                cfg = json.load(f)
+            scenario_to_geo = {
+                int(e["scenario"]): int(e["geology_index"]) for e in cfg["geologies"]
+            }
+            return True
+        except Exception as e:
+            print(f"NOTE: could not load geologies config: {e}")
+            return False
+
+    def _ensure_bootstrap_tables() -> bool:
+        """scenario→geo (config) PLUS filenum→scenario (CSV), for the v2.x_NNNN pattern."""
+        nonlocal filenum_to_scenario
+        if not _ensure_scenario_to_geo():
+            return False
+        if filenum_to_scenario is not None:
+            return True
+        csv_p, _ = _search_geology_metadata_files()
+        if csv_p is None:
             return False
         try:
             fn_map: dict[int, int] = {}
             with open(csv_p) as f:
                 for row in _csv.DictReader(f):
                     fn_map[int(row["Num"])] = int(row["Scenario"])
-            with open(cfg_p) as f:
-                cfg = json.load(f)
-            sc_map: dict[int, int] = {
-                int(e["scenario"]): int(e["geology_index"]) for e in cfg["geologies"]
-            }
             filenum_to_scenario = fn_map
-            scenario_to_geo = sc_map
             return True
         except Exception as e:
-            print(f"NOTE: could not load geology metadata files: {e}")
+            print(f"NOTE: could not load filenum→scenario CSV: {e}")
             return False
 
     geo_by_idx: dict[int, int] = {}
@@ -210,7 +237,14 @@ def resolve_geology_indices(
     for i, cid in enumerate(case_ids):
         m_al = AL_RE.match(cid)
         if m_al is not None:
-            geo_by_idx[i] = int(m_al.group(1)) // 10000
+            scen = int(m_al.group(1))
+            runnum = int(m_al.group(2))
+            # Primary: geology_config_id (scenario) → geology_index, correct for
+            # ALL emit paths. Legacy fallback: runnum//10000 (per-geology only).
+            if _ensure_scenario_to_geo() and scen in scenario_to_geo:  # type: ignore[operator]
+                geo_by_idx[i] = scenario_to_geo[scen]  # type: ignore[index]
+            else:
+                geo_by_idx[i] = runnum // 10000
             continue
         m_boot = BOOT_RE.match(cid)
         if m_boot is not None and _ensure_bootstrap_tables():
