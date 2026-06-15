@@ -156,6 +156,50 @@ def compute_angled_well_length(
     return out
 
 
+def angled_well_segments(
+    coords_xyz: np.ndarray,
+    *,
+    cube: dict[str, np.ndarray],
+    fac_surf_xy: np.ndarray,
+    reservoir_top_k_map: np.ndarray,
+    vertical_lead_m: float = DEFAULT_VERTICAL_LEAD_M,
+    ksurf: int = DEFAULT_KSURF,
+) -> list[dict[str, Any]]:
+    """Per-well 3D points of the deviated path, for rendering (same geometry as the length).
+
+    For each well returns a dict with the segment endpoints in physical (x_east, y_north, TVD):
+      fac_xy        = (x, y) of the nearest surface facility
+      lead_bottom   = (fac_x, fac_y, vertical_lead_m)   end of the 1 km vertical lead
+      reservoir_top = (well_x, well_y, tvd_top)         diagonal landing at the reservoir top
+      well_bottom   = (well_x, well_y, tvd_bot)         deepest perforation
+      fac_index     = index into fac_surf_xy of the chosen facility
+    Mapping i=round(y)+1, j=round(x)+1, k=round(z)+1 matches compute_angled_well_length.
+    """
+    CX, CY, CZ = cube["CX"], cube["CY"], cube["CZ"]
+    nk, nj, ni = CZ.shape
+    coords_xyz = np.asarray(coords_xyz, dtype=np.float64)
+    out: list[dict[str, Any]] = []
+    for w in range(coords_xyz.shape[0]):
+        x, y, z = coords_xyz[w]
+        i = min(max(int(round(float(y))) + 1, 1), ni)
+        j = min(max(int(round(float(x))) + 1, 1), nj)
+        k = min(max(int(round(float(z))) + 1, 1), nk)
+        ktop = min(max(int(reservoir_top_k_map[j - 1, i - 1]), 1), nk)
+        wx = float(CX[ksurf - 1, j - 1, i - 1])
+        wy = float(CY[ksurf - 1, j - 1, i - 1])
+        tvd_top = float(CZ[ktop - 1, j - 1, i - 1])
+        tvd_bot = float(CZ[k - 1, j - 1, i - 1])
+        fi = int(np.argmin(np.hypot(fac_surf_xy[:, 0] - wx, fac_surf_xy[:, 1] - wy)))
+        out.append({
+            "fac_xy": (float(fac_surf_xy[fi, 0]), float(fac_surf_xy[fi, 1])),
+            "fac_index": fi,
+            "lead_bottom": (float(fac_surf_xy[fi, 0]), float(fac_surf_xy[fi, 1]), float(vertical_lead_m)),
+            "reservoir_top": (wx, wy, tvd_top),
+            "well_bottom": (wx, wy, tvd_bot),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------- npv assembly
 def load_npv_terms(economics: dict | str | Path) -> dict[str, Any]:
     """Resolve npv terms from an economics dict (or a path to economics.json).
