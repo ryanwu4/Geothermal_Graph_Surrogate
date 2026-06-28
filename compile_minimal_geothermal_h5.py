@@ -208,7 +208,8 @@ def extract_vertical_profiles(
 
     For each well at (x, y), reads all perforated Z-layers and computes
     mean, min, max, std for 6 properties (perm_x, perm_y, perm_z,
-    porosity, temp0, press0) plus n_layers.
+    porosity, temp0, press0) plus the perforation Z-span
+    (perf_bot - perf_top + 1; column 24).
 
     ``preloaded_grids`` (optional): dict mapping the six ``Input/*`` dataset
     names to their full ``[z, x, y]`` numpy grids. When supplied, the per-call
@@ -216,10 +217,10 @@ def extract_vertical_profiles(
     Default ``None`` reproduces the original ``src[name][:]`` reads exactly.
 
     Returns:
-        Array of shape [N_wells, 25] (6 props * 4 stats + 1 n_layers).
+        Array of shape [N_wells, 25] (6 props * 4 stats + 1 perforation span).
     """
     n_wells = x_idx.size
-    # 6 properties * 4 stats (mean, min, max, std) + 1 n_layers = 25
+    # 6 properties * 4 stats (mean, min, max, std) + 1 perforation span = 25
     N_PROFILE_FEATURES = 25
 
     if n_wells == 0:
@@ -247,7 +248,14 @@ def extract_vertical_profiles(
     for i in range(n_wells):
         xi, yi = x_idx[i], y_idx[i]
         z_perf = np.where(well_mask[:, xi, yi])[0]
-        n_layers = len(z_perf)
+        # Perforation Z-SPAN (perf_bot - perf_top + 1), NOT the count len(z_perf).
+        # data.py reconstructs perf_top = depth - col24 + 1, which equals
+        # min(z_perf) ONLY if col24 is the span. Storing the count placed perf_top
+        # too deep whenever a column had interior inactive (-999) layers (the count
+        # then under-counts the true vertical extent). The slab CNN is resampled over
+        # [perf_top, perf_bot], so the span is also the physically meaningful node
+        # feature (the Z extent the CNN cannot otherwise recover).
+        perf_span = int(z_perf.max() - z_perf.min() + 1)
 
         col = 0
         for grid in grids:
@@ -262,7 +270,7 @@ def extract_vertical_profiles(
             profiles[i, col + 3] = np.std(valid) if len(valid) > 1 else 0.0
             col += 4
 
-        profiles[i, col] = float(n_layers)
+        profiles[i, col] = float(perf_span)
 
     return profiles
 

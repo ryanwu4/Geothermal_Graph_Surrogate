@@ -436,29 +436,31 @@ def build_single_hetero_data(
     is_injector = (inj_rate > 0).astype(np.float32)
 
     # Per-well perforation range (z_top, z_bot inclusive). vertical_profile[:, 24]
-    # is n_layers (set by extract_vertical_profiles in compile_minimal_geothermal_h5.py).
-    # depth from wells is the BOTTOM Z index of the perforation; perf_top is derived.
-    n_layers_i = vertical_profile[:, 24].astype(np.int64)
+    # is the perforation Z-SPAN (perf_bot - perf_top + 1), written by
+    # extract_vertical_profiles in compile_minimal_geothermal_h5.py. depth from wells
+    # is the BOTTOM Z index; perf_top = depth - span + 1 = min(z_perf) exactly (this
+    # is correct only because col 24 stores the span, not a count of active layers).
+    perf_span_i = vertical_profile[:, 24].astype(np.int64)
     depth_idx = wells["depth"].astype(np.int64)
-    perf_top_i = np.maximum(0, depth_idx - n_layers_i + 1)
+    perf_top_i = np.maximum(0, depth_idx - perf_span_i + 1)
     perf_bot_i = depth_idx
     perf_range = np.stack([perf_top_i, perf_bot_i], axis=1).astype(np.int64)
-    n_layers = n_layers_i.astype(np.float32)
+    perf_span = perf_span_i.astype(np.float32)
     perf_top = perf_top_i.astype(np.float32)
 
     # Node features:
     #   node_encoder == "profile" -> 8 base + 25 vertical_profile = 33 dims (legacy)
     #   node_encoder == "cnn"     -> 9 base scalars: [inj_rate, perf_top, perm_x, perm_y,
-    #                                perm_z, porosity, temp0, press0, n_layers].
+    #                                perm_z, porosity, temp0, press0, perf_span].
     #     `depth` (well bottom Z) is replaced by `perf_top` so depth=0 means well at
-    #     reservoir surface; n_layers is appended because the slab CNN cannot recover it
+    #     reservoir surface; perf_span is appended because the slab CNN cannot recover it
     #     (slab Z axis is resampled to exactly span [perf_top, perf_bot] regardless of length).
     #   node_encoder == "hybrid"  -> 8 base + 25 vertical_profile = 33 dims, same as
     #     'profile' mode. The model also runs the node CNN at forward time and
     #     concatenates its embedding to these features.
     if node_encoder == "cnn":
         node_features = np.stack(
-            [inj_rate, perf_top, perm_x, perm_y, perm_z, porosity, temp0, press0, n_layers],
+            [inj_rate, perf_top, perm_x, perm_y, perm_z, porosity, temp0, press0, perf_span],
             axis=1,
         )
     else:
@@ -642,11 +644,11 @@ def load_hetero_graphs(
                 skipped_empty += 1
                 continue
 
-            # Vertical profile: 25 features per well (6 props × 4 stats + n_layers).
+            # Vertical profile: 25 features per well (6 props × 4 stats + perf span).
             # Required for node_encoder='cnn' / 'hybrid' because perf_range is
-            # derived from `n_layers = vertical_profile[:, 24]`. A missing profile
+            # derived from `perf_span = vertical_profile[:, 24]`. A missing profile
             # in profile-mode is recoverable (zero stats); in CNN modes it would
-            # silently produce an all-zero perforation mask and n_layers=0, so we
+            # silently produce an all-zero perforation mask and span=0, so we
             # raise loudly instead.
             if "well_vertical_profile" in group:
                 vertical_profile = group["well_vertical_profile"][:].astype(np.float32)
