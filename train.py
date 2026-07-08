@@ -140,6 +140,7 @@ def main() -> None:
         "--target",
         choices=[
             "node_wept",
+            "node_wept_final",
             "node_tp_final",
             "graph_energy_total",
             "graph_energy_rate",
@@ -147,7 +148,8 @@ def main() -> None:
         ],
         default="graph_energy_total",
         help=(
-            "Prediction target: node-level WEPT, node-level next-timestep T/P, "
+            "Prediction target: node-level WEPT (first year), node-level WEPT at "
+            "the end of the 30-year horizon, node-level next-timestep T/P, "
             "graph-level energy, or graph-level discounted net revenue."
         ),
     )
@@ -305,7 +307,9 @@ def main() -> None:
         args.scaler_path = args.checkpoint_path.parent / "scaler.pkl"
 
     prediction_level = (
-        "node" if args.target in ("node_wept", "node_tp_final") else "graph"
+        "node"
+        if args.target in ("node_wept", "node_wept_final", "node_tp_final")
+        else "graph"
     )
     output_dim = TP_PROFILE_STATS if args.target == "node_tp_final" else 1
 
@@ -606,6 +610,7 @@ def main() -> None:
         "graph_energy_rate": "Energy Production Rate",
         "graph_discounted_net_revenue": "Discounted Net Revenue",
         "node_wept": "WEPT",
+        "node_wept_final": "WEPT (final year)",
         "node_tp_final": "TP Profile Statistic",
     }
     target_label = target_labels.get(args.target, "Target")

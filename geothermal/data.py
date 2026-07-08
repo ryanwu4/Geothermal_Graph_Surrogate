@@ -569,15 +569,15 @@ def build_single_hetero_data(
     # Target mapping
     if target == "node_tp_final":
         data.y = torch.tensor(tp_t1.astype(np.float32), dtype=torch.float32)
-    elif target == "node_wept":
+    elif target in ("node_wept", "node_wept_final"):
         data.y = torch.tensor(well_wept, dtype=torch.float32)
     else:
         data.y = torch.tensor([[target_val]], dtype=torch.float32)
 
     data.prediction_level = (
-        "node" if target in ("node_wept", "node_tp_final") else "graph"
+        "node" if target in ("node_wept", "node_wept_final", "node_tp_final") else "graph"
     )
-    data.filter_extractors = target == "node_wept"
+    data.filter_extractors = target in ("node_wept", "node_wept_final")
     data.output_dim = TP_PROFILE_STATS if target == "node_tp_final" else 1
     data.case_id = case_id
 
@@ -601,9 +601,12 @@ def load_hetero_graphs(
             wells = group["wells"][:]
 
             # Load Target
-            if target == "node_wept":
+            if target in ("node_wept", "node_wept_final"):
+                # node_wept: first-year WEPT; node_wept_final: WEPT at the end
+                # of the 30-year horizon (well_wept is [n_wells, n_timesteps]).
+                wept_slice = slice(0, 1) if target == "node_wept" else slice(-1, None)
                 well_wept = (
-                    group["well_wept"][:, 0:1]
+                    group["well_wept"][:, wept_slice]
                     if "well_wept" in group
                     else np.zeros((len(wells), 1), dtype=np.float32)
                 )
@@ -695,7 +698,7 @@ def load_hetero_graphs(
             # Stratification target
             if target == "node_tp_final":
                 all_targets.append(float(np.mean(tp_t1)))
-            elif target == "node_wept":
+            elif target in ("node_wept", "node_wept_final"):
                 inj_rate = wells["inj_rate"].astype(np.float32)
                 is_injector = (inj_rate > 0).astype(np.float32)
                 ext_mask = is_injector < 0.5
