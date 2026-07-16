@@ -1,0 +1,86 @@
+datasets:
+  hard_fulldepth:
+    h5_path: ablation_datasets/hard_fulldepth/seed_compiled.h5
+  highperf_cma:
+    h5_path: ablation_datasets/highperf_cma/compiled.h5
+    max_concurrent: 2
+  simple_2pair:
+    h5_path: ablation_datasets/simple_2pair/seed_compiled.h5
+exclude: []
+output_root: analysis/surrogate_ablation/runs/stage3_holdout_geo
+overrides: []
+python: /home/rwu4/miniconda3/envs/geothermal-pomdp/bin/python
+scheduler:
+  gpus:
+  - 0
+  max_concurrent_per_gpu: 2
+seeds:
+- 42
+shared:
+  batch_size: 16
+  cache_to_gpu: true
+  early_stop_patience: 40
+  max_epochs: 180
+  split_seed: 42
+  test_fraction: 0.15
+  val_fraction: 0.15
+svd:
+  k: 32
+  max_cases_fit: 300
+  max_slabs: 12000
+targets:
+- graph_discounted_net_revenue
+- node_wept_final
+variants:
+  global_cnn:
+    flags:
+      learning-rate: 0.0003
+      model: global_cnn
+      widths: 16,32,64,128
+    gpu: 0
+    kind: baseline
+  gnn_default:
+    flags:
+      edge-encoder: cnn
+    gpu: 0
+    kind: train_py
+  gnn_dist_edge:
+    flags:
+      edge-encoder: dist
+    gpu: 0
+    kind: train_py
+  gnn_no_cnn:
+    flags:
+      edge-encoder: dist
+      node-encoder: profile
+      node-features: type_only
+    gpu: 0
+    kind: train_py
+  gnn_svd_edge:
+    flags:
+      edge-encoder: svd
+    gpu: 0
+    kind: train_py
+  gnn_type_only_nodes:
+    flags:
+      node-encoder: profile
+      node-features: type_only
+    gpu: 0
+    kind: train_py
+  mlp:
+    flags:
+      dropout: 0.1
+      hidden-dims: 512,512,256
+      learning-rate: 0.001
+      model: mlp
+    gpu: 0
+    kind: baseline
+holdout_geologies:
+- 8
+- 3
+_note: 'STAGE 3 (held-out geology OOD): 7 variants x 3 datasets x 2 targets x 2 folds
+  x 1 seed = 84 full-length jobs. Folds: geo 8 (tight reservoir, hardest; within-geology
+  revenue CV 0.252) and geo 3 (median difficulty, CV 0.151; chosen programmatically
+  from ablation_datasets/figures/dataset_summary_arrays.npz). Held-out cases become
+  the test_ood split; in-dist test kept for reference. The MLP''s geology one-hot
+  is structurally blind to the held-out geology.'

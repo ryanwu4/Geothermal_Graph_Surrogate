@@ -13,6 +13,7 @@ from geothermal.physics_slab import (
     PhysicsSlabExtractor,
     PhysicsSlabCNN,
     PhysicsSlabSVD,
+    DistanceEdgeEncoder,
     PhysicsNodeSlabExtractor,
     PhysicsNodeSlabCNN,
 )
@@ -83,6 +84,7 @@ class HeteroGNNRegressor(L.LightningModule):
         edge_norm: str = "batchnorm",
         edge_raw_means: bool = False,
         node_encoder: str = "profile",
+        node_features_mode: str = "full",
         latent_node_dim: int = 32,
         node_pad: int = 3,
         node_z_out: int = 16,
@@ -136,8 +138,13 @@ class HeteroGNNRegressor(L.LightningModule):
             self.edge_cnn = PhysicsSlabSVD(
                 svd_weights_path=svd_weights_path, latent_dim=self.latent_edge_dim
             )
+        elif edge_encoder == "dist":
+            # Ablation: edges carry inter-well distance only (no geology slab).
+            self.edge_cnn = DistanceEdgeEncoder(latent_dim=self.latent_edge_dim)
         else:
             raise ValueError(f"Unknown edge_encoder: {edge_encoder}")
+        # 'dist' never reads slabs; skip the grid_sample extraction for it.
+        self.edge_needs_slabs = edge_encoder in ("cnn", "svd")
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
@@ -256,14 +263,17 @@ class HeteroGNNRegressor(L.LightningModule):
                 phys_dict = phys_ctx.d
                 full_shape = phys_ctx.full_shape
 
-                # Expand physics dict to batch size `num_edges_i`
-                phys_expanded = {}
-                for k, v in phys_dict.items():
-                    # v is (Z, X, Y), expand to (num_edges_i, Z, X, Y)
-                    phys_expanded[k] = v.unsqueeze(0).expand(num_edges_i, -1, -1, -1)
+                if getattr(self, "edge_needs_slabs", True):
+                    # Expand physics dict to batch size `num_edges_i`
+                    phys_expanded = {}
+                    for k, v in phys_dict.items():
+                        # v is (Z, X, Y), expand to (num_edges_i, Z, X, Y)
+                        phys_expanded[k] = v.unsqueeze(0).expand(num_edges_i, -1, -1, -1)
 
-                # Run Extractor + CNN
-                slabs = self.slab_extractor(phys_expanded, ca_i, cb_i, full_shape)
+                    # Run Extractor + CNN
+                    slabs = self.slab_extractor(phys_expanded, ca_i, cb_i, full_shape)
+                else:
+                    slabs = None
                 e_feat_i = self.edge_cnn(slabs, ca_i, cb_i)
                 edge_attrs.append((mask, e_feat_i))
 

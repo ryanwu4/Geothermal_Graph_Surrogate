@@ -605,3 +605,27 @@ class PhysicsSlabSVD(nn.Module):
         edge_features = self.mlp(concat_vec)  # (B, latent_dim)
         
         return edge_features
+
+
+class DistanceEdgeEncoder(nn.Module):
+    """Ablation edge encoder: inter-well distance only, no geology slab.
+
+    Drop-in for PhysicsSlabCNN/PhysicsSlabSVD — same call signature — but
+    `slabs` is ignored (the model skips slab extraction entirely when
+    edge_encoder == 'dist', see HeteroGNNRegressor.edge_needs_slabs). Isolates
+    the contribution of the physics-slab CNN: edges keep trivial geometry
+    (distance) and lose all geology information.
+    """
+
+    def __init__(self, latent_dim: int = 32):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.GELU(),
+            nn.Linear(32, latent_dim),
+        )
+
+    def forward(self, slabs, coords_a, coords_b):
+        delta_s = torch.norm(coords_a - coords_b, dim=1, keepdim=True)
+        return self.mlp(delta_s)

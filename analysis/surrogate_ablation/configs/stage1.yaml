@@ -1,0 +1,91 @@
+# Stage-1 ablation matrix: 6 variants x 3 datasets x 3 targets x 1 seed = 54 jobs.
+# Top up seeds by editing `seeds:` (e.g. [42, 43, 44]) and re-running — completed
+# jobs are skipped (config-change staleness is detected via job.json cmd compare).
+# GPU per variant via `gpu:`; per-cell via `overrides`. Currently ALL ON GPU 0
+# (GPU 1 occupied by vLLM as of 2026-07-09) — repin when GPU 1 frees up.
+#
+# A fully geology-blind GNN combo is expressible without code changes if wanted
+# later: flags { edge-encoder: dist, node-features: type_only,
+#                node-encoder: profile, no-enrich-global-attr: true }.
+python: /home/rwu4/miniconda3/envs/geothermal-pomdp/bin/python
+output_root: analysis/surrogate_ablation/runs/stage1
+shared:
+  split_seed: 42
+  val_fraction: 0.15
+  test_fraction: 0.15
+  batch_size: 16
+  max_epochs: 180
+  early_stop_patience: 40
+  cache_to_gpu: true
+datasets:
+  simple_2pair:
+    h5_path: ablation_datasets/simple_2pair/seed_compiled.h5
+  hard_fulldepth:
+    h5_path: ablation_datasets/hard_fulldepth/seed_compiled.h5
+  highperf_cma:
+    h5_path: ablation_datasets/highperf_cma/compiled.h5
+    max_concurrent: 2
+targets:
+- graph_energy_total
+- graph_discounted_net_revenue
+- node_wept_final
+seeds:      # seeds 43/44 top up revenue+wept only (energy ~= revenue, excluded)
+- 42
+- 43
+- 44
+scheduler:
+  gpus:
+  - 0
+  max_concurrent_per_gpu: 2
+svd:
+  k: 32
+  max_cases_fit: 300
+  max_slabs: 12000
+variants:
+  gnn_default:
+    kind: train_py
+    gpu: 0
+    flags:
+      edge-encoder: cnn
+  gnn_dist_edge:
+    kind: train_py
+    gpu: 0
+    flags:
+      edge-encoder: dist
+  gnn_type_only_nodes:
+    kind: train_py
+    gpu: 0
+    flags:
+      node-features: type_only
+      node-encoder: profile
+  gnn_svd_edge:
+    kind: train_py
+    gpu: 0
+    flags:
+      edge-encoder: svd
+  mlp:
+    kind: baseline
+    gpu: 0
+    flags:
+      model: mlp
+      learning-rate: 0.001
+      hidden-dims: 512,512,256
+      dropout: 0.1
+  global_cnn:
+    kind: baseline
+    gpu: 0
+    flags:
+      model: global_cnn
+      learning-rate: 0.0003
+      widths: 16,32,64,128
+  gnn_no_cnn:   # no CNN info to nodes OR edges; geology only via global attr
+    kind: train_py
+    gpu: 0
+    flags:
+      edge-encoder: dist
+      node-features: type_only
+      node-encoder: profile
+overrides: []
+exclude:
+- { target: graph_energy_total, seed: 43 }
+- { target: graph_energy_total, seed: 44 }

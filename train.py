@@ -176,9 +176,56 @@ def main() -> None:
     )
     parser.add_argument(
         "--edge-encoder",
-        choices=["cnn", "svd"],
+        choices=["cnn", "svd", "dist"],
         default="cnn",
-        help="Model to use for geometric edge encoding.",
+        help=(
+            "Model to use for geometric edge encoding. 'dist' is an ablation: "
+            "edges carry inter-well distance only (no geology slab)."
+        ),
+    )
+    parser.add_argument(
+        "--node-features",
+        choices=["full", "type_only"],
+        default="full",
+        help=(
+            "Ablation switch: 'type_only' reduces node features to the "
+            "is_injector flag (pair with --node-encoder profile)."
+        ),
+    )
+    parser.add_argument(
+        "--max-cases",
+        type=int,
+        default=None,
+        help="Load only the first N cases (sorted case-id order); smoke tests.",
+    )
+    parser.add_argument(
+        "--require-geology-map",
+        action="store_true",
+        help=(
+            "Fail instead of falling back to runtime/target-only stratification "
+            "when the adjacent case_geology_map.json is missing or incomplete. "
+            "Used by the ablation runner to guarantee identical splits."
+        ),
+    )
+    parser.add_argument(
+        "--train-subsample",
+        type=int,
+        default=None,
+        help=(
+            "Data-efficiency ablation: after the split, subsample the train "
+            "set to N cases (geology-proportional, seeded by seed+run_id). "
+            "Val/test splits are untouched."
+        ),
+    )
+    parser.add_argument(
+        "--holdout-geologies",
+        type=str,
+        default=None,
+        help=(
+            "OOD ablation: comma-separated geology indices excluded from "
+            "train/val/test; their cases form an extra 'test_ood' eval split. "
+            "Requires stratified split with resolved geology indices."
+        ),
     )
     parser.add_argument(
         "--svd-weights-path",
@@ -330,6 +377,7 @@ def main() -> None:
     graphs_raw, targets = load_hetero_graphs(
         args.h5_path, target=args.target, node_encoder=args.node_encoder,
         enrich_global_attr=args.enrich_global_attr,
+        node_features_mode=args.node_features, max_cases=args.max_cases,
     )
 
     print(f"Prediction mode: {args.target} (level={prediction_level})")
@@ -359,6 +407,7 @@ def main() -> None:
         print(f"Ablation study: removing {args.ablate}")
         apply_ablation(graphs_raw, args.ablate)
 
+    ood_idx: list[int] = []  # held-out-geology cases ('test_ood' split)
     if args.stratified_split:
         # Try to load the case_id -> geology_index map adjacent to the H5 to
         # enable geology-aware stratification. Falls back, in order:
@@ -387,6 +436,11 @@ def main() -> None:
                 except Exception as e:
                     print(f"WARN: could not load {cand}: {e}; falling back to runtime derivation")
                 break
+        if geology_indices is None and args.require_geology_map:
+            raise SystemExit(
+                "--require-geology-map: no complete case_geology_map.json "
+                f"adjacent to {args.h5_path}; refusing stratification fallback."
+            )
         if geology_indices is None:
             # No usable JSON map — derive geology indices from case_ids + H5.
             # This is the normal path for AL runs against current_compiled.h5.
@@ -397,14 +451,47 @@ def main() -> None:
                 print(f"Derived geology indices from case_ids/fingerprints: {len(case_ids)} cases over {n_geos} geologies")
             else:
                 print("NOTE: could not derive geology indices; falling back to target-only stratification")
-        train_idx, val_idx, test_idx = split_indices_stratified(
-            targets=targets,
-            val_fraction=args.val_fraction,
-            test_fraction=args.test_fraction,
-            seed=split_seed,
-            geology_indices=geology_indices,
-        )
+        if args.holdout_geologies:
+            # OOD ablation: exclude held-out geologies from train/val/test;
+            # their cases become the extra 'test_ood' eval split.
+            if geology_indices is None:
+                raise SystemExit(
+                    "--holdout-geologies requires resolved geology indices."
+                )
+            holdout_geos = sorted({int(x) for x in args.holdout_geologies.split(",")})
+            all_idx = np.arange(len(graphs_raw))
+            ood_mask = np.isin(geology_indices, holdout_geos)
+            if not ood_mask.any():
+                raise SystemExit(
+                    f"--holdout-geologies {holdout_geos}: no cases matched."
+                )
+            ood_idx = all_idx[ood_mask].tolist()
+            indist = all_idx[~ood_mask]
+            tr_l, va_l, te_l = split_indices_stratified(
+                targets=targets[indist],
+                val_fraction=args.val_fraction,
+                test_fraction=args.test_fraction,
+                seed=split_seed,
+                geology_indices=geology_indices[indist],
+            )
+            train_idx = indist[np.asarray(tr_l)]
+            val_idx = indist[np.asarray(va_l)]
+            test_idx = indist[np.asarray(te_l)]
+            print(f"Holdout geologies {holdout_geos}: {len(ood_idx)} OOD cases "
+                  f"-> 'test_ood'; in-dist split over {len(indist)} cases")
+        else:
+            train_idx, val_idx, test_idx = split_indices_stratified(
+                targets=targets,
+                val_fraction=args.val_fraction,
+                test_fraction=args.test_fraction,
+                seed=split_seed,
+                geology_indices=geology_indices,
+            )
     else:
+        if args.holdout_geologies:
+            raise SystemExit(
+                "--holdout-geologies requires --stratified-split."
+            )
         train_val_idx, test_idx = train_test_split(
             range(len(graphs_raw)),
             test_size=args.test_fraction,
@@ -421,6 +508,18 @@ def main() -> None:
             random_state=split_seed,
             shuffle=True,  # Keep shuffle=True for non-stratified
         )
+
+    if args.train_subsample is not None:
+        from geothermal.data import subsample_train_indices
+        n_before = len(train_idx)
+        train_idx = subsample_train_indices(
+            train_idx,
+            geology_indices if args.stratified_split else None,
+            args.train_subsample,
+            seed=args.seed + args.run_id,
+        )
+        print(f"Train subsample: {n_before} -> {len(train_idx)} cases "
+              f"(subsample seed {args.seed + args.run_id})")
 
     train_graphs_raw = [graphs_raw[i] for i in train_idx]
     val_graphs_raw = [graphs_raw[i] for i in val_idx]
@@ -529,6 +628,7 @@ def main() -> None:
             edge_encoder=args.edge_encoder,
             svd_weights_path=str(args.svd_weights_path) if args.svd_weights_path else None,
             node_encoder=args.node_encoder,
+            node_features_mode=args.node_features,
             latent_node_dim=args.latent_node_dim,
             node_pad=args.node_pad,
             node_z_extent=args.node_z_extent,
@@ -604,6 +704,10 @@ def main() -> None:
         "val": val_graphs,
         "test": test_graphs,
     }
+    if ood_idx:
+        split_graphs["test_ood"] = [
+            scaler.transform_graph(graphs_raw[i]) for i in ood_idx
+        ]
 
     target_labels = {
         "graph_energy_total": "Total Energy Production",

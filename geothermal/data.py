@@ -102,13 +102,16 @@ def hparams_to_data_kwargs(hparams) -> dict:
     if isinstance(hparams, dict):
         node_encoder = hparams.get("node_encoder", "profile")
         global_dim = int(hparams.get("global_dim", 1))
+        node_features_mode = hparams.get("node_features_mode", "full")
     else:
         node_encoder = getattr(hparams, "node_encoder", "profile")
         global_dim = int(getattr(hparams, "global_dim", 1))
+        node_features_mode = getattr(hparams, "node_features_mode", "full")
     enrich_global_attr = global_dim != 1
     return {
         "node_encoder": node_encoder,
         "enrich_global_attr": enrich_global_attr,
+        "node_features_mode": node_features_mode,
     }
 
 
@@ -419,6 +422,7 @@ def build_single_hetero_data(
     case_id: str = "infer",
     node_encoder: str = "profile",
     enrich_global_attr: bool = False,
+    node_features_mode: str = "full",
 ) -> HeteroData:
     n_wells = len(wells)
 
@@ -458,7 +462,11 @@ def build_single_hetero_data(
     #   node_encoder == "hybrid"  -> 8 base + 25 vertical_profile = 33 dims, same as
     #     'profile' mode. The model also runs the node CNN at forward time and
     #     concatenates its embedding to these features.
-    if node_encoder == "cnn":
+    if node_features_mode == "type_only":
+        # Ablation: nodes carry ONLY the injector/producer flag (1 column).
+        # Pair with node_encoder='profile' so no node-CNN embedding is added.
+        node_features = is_injector[:, None].astype(np.float32)
+    elif node_encoder == "cnn":
         node_features = np.stack(
             [inj_rate, perf_top, perm_x, perm_y, perm_z, porosity, temp0, press0, perf_span],
             axis=1,
@@ -590,6 +598,7 @@ def load_hetero_graphs(
     max_cases: int | None = None,
     node_encoder: str = "profile",
     enrich_global_attr: bool = False,
+    node_features_mode: str = "full",
 ) -> tuple[list[HeteroData], np.ndarray]:
     graphs: list[HeteroData] = []
     all_targets: list[float] = []
@@ -688,12 +697,10 @@ def load_hetero_graphs(
                 case_id=case_id,
                 node_encoder=node_encoder,
                 enrich_global_attr=enrich_global_attr,
+                node_features_mode=node_features_mode,
             )
 
             graphs.append(data)
-
-            if max_cases is not None and len(graphs) >= max_cases:
-                break
 
             # Stratification target
             if target == "node_tp_final":
@@ -708,6 +715,11 @@ def load_hetero_graphs(
                 )
             else:
                 all_targets.append(target_val)
+
+            # NOTE: break must come AFTER the target append — breaking between
+            # graphs.append and all_targets.append misaligns graphs/targets.
+            if max_cases is not None and len(graphs) >= max_cases:
+                break
 
     if skipped_empty > 0:
         print(f"Skipped {skipped_empty} cases with 0 wells.")
@@ -920,3 +932,37 @@ def withhold_top_pct(
         f"keeping {len(kept_graphs)} runs."
     )
     return kept_graphs, kept_targets
+
+
+def subsample_train_indices(
+    train_idx,
+    geology_indices,
+    n: int,
+    seed: int,
+):
+    """Deterministic geology-proportional subsample of a train split.
+
+    Ablation helper (data-efficiency runs): same (train_idx, geology, n, seed)
+    -> same subset for every model variant. Largest-remainder allocation across
+    geologies, seeded choice within each. Falls back to a plain seeded
+    subsample when geology_indices is None. Returns a sorted np.ndarray.
+    """
+    train_idx = np.sort(np.asarray(train_idx))
+    if n >= train_idx.size:
+        return train_idx
+    rng = np.random.default_rng(seed)
+    if geology_indices is None:
+        return np.sort(rng.choice(train_idx, size=n, replace=False))
+    geos = np.asarray(geology_indices)[train_idx]
+    uniq = np.unique(geos)
+    pool_sizes = np.array([(geos == g).sum() for g in uniq])
+    quotas = n * pool_sizes / train_idx.size
+    counts = np.floor(quotas).astype(int)
+    short = n - counts.sum()
+    order = np.argsort(-(quotas - counts))
+    counts[order[:short]] += 1
+    picks = []
+    for g, c in zip(uniq, counts):
+        pool = train_idx[geos == g]
+        picks.append(rng.choice(pool, size=min(int(c), pool.size), replace=False))
+    return np.sort(np.concatenate(picks))

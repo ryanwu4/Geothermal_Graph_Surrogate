@@ -1,0 +1,770 @@
+{
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0000_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0001_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0002_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0003_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0004_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0005_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0006_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0007_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0008_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0009_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0010_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0011_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0012_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0013_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0014_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0015_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0016_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_71_run0017_iter0000": {
+    "geology_index": 0
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10000_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10001_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10002_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10003_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10004_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10005_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10006_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10007_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10008_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10009_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10010_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10011_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10012_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10013_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10014_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10015_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_72_run10016_iter0000": {
+    "geology_index": 1
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20000_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20001_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20002_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20003_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20004_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20005_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20006_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20007_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20008_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20009_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20010_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20011_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20012_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20013_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20014_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20015_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_73_run20016_iter0000": {
+    "geology_index": 2
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30000_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30001_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30002_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30003_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30004_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30005_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30006_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30007_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30008_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30009_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30010_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30011_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30012_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30013_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30014_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30015_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_74_run30016_iter0000": {
+    "geology_index": 3
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40000_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40001_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40002_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40003_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40004_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40005_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40006_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40007_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40008_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40009_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40010_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40011_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40012_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40013_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40014_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40015_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_75_run40016_iter0000": {
+    "geology_index": 4
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50000_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50001_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50002_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50003_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50004_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50005_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50006_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50007_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50008_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50009_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50010_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50011_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50012_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50013_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50014_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50015_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_76_run50016_iter0000": {
+    "geology_index": 5
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60000_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60001_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60002_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60003_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60004_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60005_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60006_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60007_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60008_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60009_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60010_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60011_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60012_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60013_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60014_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60015_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_77_run60016_iter0000": {
+    "geology_index": 6
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70000_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70001_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70002_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70003_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70004_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70005_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70006_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70007_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70008_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70009_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70010_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70011_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70012_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70013_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70014_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70015_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_78_run70016_iter0000": {
+    "geology_index": 7
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80000_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80001_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80002_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80003_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80004_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80005_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80006_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80007_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80008_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80009_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80010_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80011_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80012_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80013_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80014_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80015_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_79_run80016_iter0000": {
+    "geology_index": 8
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90000_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90001_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90002_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90003_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90004_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90005_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90006_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90007_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90008_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90009_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90010_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90011_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90012_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90013_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90014_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90015_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_80_run90016_iter0000": {
+    "geology_index": 9
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100000_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100001_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100002_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100003_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100004_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100005_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100006_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100007_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100008_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100009_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100010_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100011_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100012_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100013_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100014_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100015_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_81_run100016_iter0000": {
+    "geology_index": 10
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110000_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110001_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110002_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110003_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110004_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110005_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110006_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110007_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110008_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110009_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110010_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110011_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110012_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110013_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110014_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110015_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_82_run110016_iter0000": {
+    "geology_index": 11
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120000_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120001_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120002_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120003_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120004_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120005_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120006_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120007_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120008_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120009_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120010_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120011_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120012_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120013_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120014_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120015_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_83_run120016_iter0000": {
+    "geology_index": 12
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130000_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130001_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130002_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130003_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130004_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130005_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130006_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130007_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130008_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130009_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130010_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130011_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130012_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130013_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130014_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130015_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_84_run130016_iter0000": {
+    "geology_index": 13
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140000_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140001_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140002_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140003_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140004_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140005_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140006_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140007_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140008_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140009_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140010_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140011_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140012_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140013_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140014_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140015_iter0000": {
+    "geology_index": 14
+  },
+  "v2.5_seed_clean_depth5055_42_iter0000_85_run140016_iter0000": {
+    "geology_index": 14
+  }
+}
