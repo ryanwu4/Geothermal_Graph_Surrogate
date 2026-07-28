@@ -85,6 +85,17 @@ $PY analysis/surrogate_ablation/run_matrix.py --config analysis/surrogate_ablati
   (hparams_to_data_kwargs threads it); older analysis code that hand-builds
   graphs must pass `node_features_mode="type_only"`.
 
+## Results figures (figures/, regenerate with plot_final.py)
+
+- `final_architecture_r2.png` — full-data test R² per variant × dataset × objective (all 7 variants).
+- `final_data_efficiency.png` — test R² vs train size {256, 512, full}, revenue + WEPT.
+- `final_holdout_geo.png` — OOD test R² on held-out geologies (geo 3 typical, geo 8 tight).
+
+Headline: `gnn_type_only_nodes` matches/beats the default everywhere (node scalars
+redundant); `gnn_no_cnn` is decisively worst, esp. per-well WEPT (physics-slab CNN
+is load-bearing); grid-reading models degrade far less than the MLP on the unseen
+hard geology.
+
 ## Production safety
 
 train.py/data.py/model.py changes for variants 3–4 are additive with unchanged
